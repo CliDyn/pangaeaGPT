@@ -32,7 +32,7 @@ project_files_structure.txt
 transit.json
 directory_structure.txt
 pangaea_session_history.json
-speed_download_checker.py
+
 
 # Ignore temporary files
 tmp/figs/

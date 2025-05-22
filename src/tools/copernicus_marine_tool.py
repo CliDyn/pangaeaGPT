@@ -87,6 +87,48 @@ class CopernicusMarineRetrievalArgs(BaseModel):
         'depth', description="Vertical axis type (only 'depth' is supported)."
     )
 
+def _generate_descriptive_filename(
+    variables: List[str], 
+    start_datetime: str, 
+    end_datetime: str,
+    minimum_depth: Optional[float] = None,
+    maximum_depth: Optional[float] = None
+) -> str:
+    """
+    Generate a descriptive filename based on request parameters.
+    Format: {variables_joined}_{start_date}_to_{end_date}[_depth_{min_depth}_to_{max_depth}].nc
+    
+    Example: thetao_so_2020_01_01_to_2020_02_01_depth_0_to_100.nc
+    """
+    # Clean and join variables - limit to avoid overly long filenames
+    clean_variables = []
+    for var in variables[:3]:  # Limit to first 3 variables to avoid long filenames
+        clean_var = var.replace('-', '_').replace('/', '_').replace(' ', '_')
+        clean_variables.append(clean_var)
+    
+    if len(variables) > 3:
+        variables_str = "_".join(clean_variables) + "_plus" + str(len(variables) - 3)
+    else:
+        variables_str = "_".join(clean_variables)
+    
+    # Convert dates to underscore format (YYYY-MM-DD -> YYYY_MM_DD)
+    clean_start = start_datetime.split()[0].replace('-', '_')  # Handle datetime strings, take date part
+    clean_end = end_datetime.split()[0].replace('-', '_')      # Handle datetime strings, take date part
+    
+    # Build filename
+    filename_parts = [variables_str, clean_start, "to", clean_end]
+    
+    # Add depth range if specified
+    if minimum_depth is not None or maximum_depth is not None:
+        depth_min = str(int(minimum_depth)) if minimum_depth is not None else "surface"
+        depth_max = str(int(maximum_depth)) if maximum_depth is not None else "bottom"
+        filename_parts.extend(["depth", depth_min, "to", depth_max])
+    
+    # Join with underscores and add extension
+    filename = "_".join(filename_parts) + ".nc"
+    
+    return filename
+
 def retrieve_copernicus_marine_data(
     dataset_id: str,
     variables: List[str],
@@ -102,7 +144,7 @@ def retrieve_copernicus_marine_data(
 ) -> dict:
     """
     Retrieves oceanographic data from the Copernicus Marine Service and saves it locally
-    as NetCDF and CSV files.
+    as NetCDF file.
     
     Args:
         dataset_id: The Copernicus Marine dataset ID
@@ -118,7 +160,7 @@ def retrieve_copernicus_marine_data(
         vertical_axis: Vertical axis type ('depth' or 'elevation')
         
     Returns:
-        dict: Results including success status and output file paths
+        dict: Results including success status and output file path
     """
     try:
         logging.info(
@@ -188,40 +230,22 @@ def retrieve_copernicus_marine_data(
         variables_info = ", ".join(list(dataset.data_vars))
         
         # 3) Save to NetCDF file
-        uid = uuid.uuid4().hex
-        short_name = dataset_id.split('_')[-1] if '_' in dataset_id else dataset_id
-        nc_filename = f"{short_name}_{uid}.nc"
+        nc_filename = _generate_descriptive_filename(
+            variables, start_datetime, end_datetime, minimum_depth, maximum_depth
+        )
         nc_path = os.path.join(copernicus_dir, nc_filename)
         
         logging.info(f"Saving to NetCDF file: {nc_path}")
         dataset.to_netcdf(nc_path)
         logging.info(f"Successfully saved to NetCDF: {nc_path}")
         
-        # 4) Also save first variable to CSV for easier access
-        csv_filename = f"{short_name}_{uid}.csv"
-        csv_path = os.path.join(copernicus_dir, csv_filename)
-        
-        try:
-            # Just flatten to DataFrame and save
-            df = dataset.to_dataframe().reset_index()
-            # Limit rows to avoid huge files
-            if len(df) > 1000:
-                df = df.iloc[:1000]
-            
-            df.to_csv(csv_path, index=False)
-            logging.info(f"Successfully saved to CSV: {csv_path}")
-        except Exception as csv_error:
-            logging.warning(f"Error saving to CSV (continuing anyway): {csv_error}")
-            csv_path = None
-        
-        # 5) Return success with file paths
+        # 4) Return success with file path
         return {
             "success": True,
-            "output_path_netcdf": nc_path,
-            "output_path_csv": csv_path,
+            "output_path": nc_path,
             "dataset_id": dataset_id,
             "variables": variables_info,
-            "message": "Copernicus Marine data downloaded successfully"
+            "message": "Copernicus Marine data downloaded successfully in NetCDF format"
         }
         
     except Exception as e:
