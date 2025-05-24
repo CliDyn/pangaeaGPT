@@ -73,7 +73,7 @@ with st.sidebar:
 
     model_name = st.selectbox(
         "Select Model",
-        ["gpt-4o", "gpt-4o-mini", "o1-mini", "o3-mini"],
+        ["gpt-4o", "gpt-4.1", "gpt-4o-mini", "o1-mini", "o3-mini"],
         index=0,
         key="model_name"
     )
@@ -172,6 +172,7 @@ from main import (
     ensure_thread_id,
 )
 from langchain_community.chat_message_histories import ChatMessageHistory
+from langchain_community.callbacks.streamlit import StreamlitCallbackHandler
 
 # === Step 6: Initialize Session State ===
 initialize_session_state(st.session_state)
@@ -409,120 +410,117 @@ if st.session_state.current_page == "search":
 elif st.session_state.current_page == "data_agent":
     st.markdown("## Data Agent")
     message_placeholder = st.empty()
-    # Add processing status display container
-    thinking_container = st.container()
-    thinking_status = st.empty()
 
-    # Initialize thinking log in session state if not exists
-    if "thinking_log" not in st.session_state:
-        st.session_state.thinking_log = []
-        
-    with st.sidebar:
-        if "thinking_log" in st.session_state and st.session_state.thinking_log:
-            with st.expander("🕒 Agent Performance Stats"):
-                # Create stats dictionary to hold all counters
-                stats = {
-                    "total_steps": 0,
-                    "agent_times": {},
-                    "tool_counts": {}
-                }
-                
-                # Process the thinking log to extract stats
-                def process_log_stats(entries, stats_dict):
-                    for entry in entries:
-                        stats_dict["total_steps"] += 1
-                        
-                        # Track agent execution times
-                        if entry.get("agent_name") and entry.get("duration"):
-                            agent = entry["agent_name"]
-                            if agent not in stats_dict["agent_times"]:
-                                stats_dict["agent_times"][agent] = []
-                            stats_dict["agent_times"][agent].append(entry["duration"])
-                        
-                        # Track tool usage
-                        if entry.get("tool_name"):
-                            tool = entry["tool_name"]
-                            stats_dict["tool_counts"][tool] = stats_dict["tool_counts"].get(tool, 0) + 1
-                        
-                        # Process children recursively
-                        if entry.get("children"):
-                            process_log_stats(entry["children"], stats_dict)
-                
-                # Call the function with our stats dictionary
-                process_log_stats(st.session_state.thinking_log, stats)
-                
-                # Display statistics
-                st.write(f"**Total Steps:** {stats['total_steps']}")
-                
-                st.write("**Agent Execution Times:**")
-                for agent, times in stats["agent_times"].items():
-                    avg_time = sum(times) / len(times) if times else 0
-                    st.write(f"- {agent}: {avg_time:.2f}s avg")
-                
-                st.write("**Tool Usage:**")
-                for tool, count in sorted(stats["tool_counts"].items(), key=lambda x: x[1], reverse=True):
-                    st.write(f"- {tool}: {count} calls")
-        
-    logging.info("Entered Data Agent page")
+    # --- START: Restore Buttons ---
+    logging.info("Entered Data Agent page") # Keep this log line
 
-    # Save history button
-    if st.button("Export Session History to JSON"):
-        history_data = st.session_state.get("execution_history", [])
-        with open("pangaea_session_history.json", "w", encoding="utf-8") as f:
-            json.dump(history_data, f, indent=4, ensure_ascii=False)
-        st.success("Exported session history to pangaea_session_history.json")
-        logging.info("Exported session history to JSON")
+    # --- Add Button Row ---
+    button_cols = st.columns([1, 1, 1, 3]) # Adjust ratios as needed
 
-    # Clear History button
-    if st.button("Clear History", key="clear_history_data_agent"):
-        st.session_state.messages_data_agent = []
-        st.session_state.intermediate_steps = []
-        logging.info("Cleared Data Agent history")
-        st.rerun()
+    with button_cols[0]:
+        # Save history button
+        if st.button("Export History", key="export_history_data_agent", use_container_width=True):
+            history_data = st.session_state.get("execution_history", [])
+            try:
+                # Attempt to pretty-print JSON
+                json_string = json.dumps(history_data, indent=4, ensure_ascii=False)
+            except TypeError as e:
+                # Fallback for objects that aren't JSON serializable
+                logging.error(f"Error serializing history: {e}. Using simple string conversion.")
+                json_string = str(history_data)
 
-    st.markdown("<div style='height: 1rem;'></div>", unsafe_allow_html=True)
-    col1, col2, col3 = st.columns([1, 4, 1])
-    with col3:
-        if st.button("Back to Search", use_container_width=True, type="secondary"):
-            set_current_page(st.session_state, "search")
-            logging.info("Navigated back to Search page")
+            # Use a unique key for the download button itself to avoid conflicts
+            download_key = f"download_hist_{uuid.uuid4()}" 
+            st.download_button(
+                label="Download History (JSON)",
+                data=json_string.encode('utf-8'),
+                file_name="pangaea_session_history.json",
+                mime="application/json",
+                key=download_key
+            )
+            logging.info("Initiated session history download")
+
+    with button_cols[1]:
+        # Clear History button
+        if st.button("Clear History", key="clear_history_data_agent", use_container_width=True):
+            st.session_state.messages_data_agent = []
+            st.session_state.intermediate_steps = []
+            # Optionally clear execution history as well
+            # st.session_state.execution_history = []
+            logging.info("Cleared Data Agent history")
             st.rerun()
-    st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
+
+    with button_cols[2]:
+         # Back to Search button
+         if st.button("Back to Search", key="back_to_search_data_agent", use_container_width=True, type="secondary"):
+             set_current_page(st.session_state, "search")
+             logging.info("Navigated back to Search page")
+             st.rerun()
+
+    st.markdown("<hr style='margin-top: 0.5rem; margin-bottom: 1rem;'>", unsafe_allow_html=True) # Add a separator line with adjusted margin
+    # --- END: Restore Buttons ---
+
+    # --- START: Display Agent Steps Title with Icon ---
+    agent_icon_path = "img/agent_icon.png" 
+    agent_steps_label = "Agent Steps"
+    try:
+        if Path(agent_icon_path).exists():
+            agent_icon_base64 = img_to_base64(agent_icon_path)
+            # Use markdown with HTML to display icon and text, styled like a subheader
+            st.markdown(
+                f'''<div style="display: flex; align-items: center; margin-bottom: 0.5rem;">
+                       <img src="data:image/png;base64,{agent_icon_base64}" width="24" height="24" style="margin-right: 10px; vertical-align: middle;">
+                       <h3 style="margin: 0; padding: 0; border: none; background: none; text-shadow: none; vertical-align: middle;">{agent_steps_label}</h3>
+                   </div>''',
+                unsafe_allow_html=True
+            )
+        else:
+            # Fallback if icon not found
+            st.subheader(f"🕵️ {agent_steps_label}")
+            logging.warning(f"Agent icon not found at: {agent_icon_path}")
+    except Exception as e:
+        # Fallback on any error during icon loading/encoding
+        st.subheader(f"🕵️ {agent_steps_label}")
+        logging.error(f"Error loading agent icon: {e}")
+    # --- END: Display Agent Steps Title with Icon ---
+
+    # Define the container for the callback handler output
+    callback_container = st.container()
+    st.markdown("---") # Optional separator
+
+    # --- Existing Code Continues Below ---
     datasets_info = get_datasets_info_for_active_datasets(st.session_state)
     logging.info(f"Loaded {len(datasets_info)} datasets for Data Agent")
     ensure_memory(st.session_state)
     ensure_thread_id(st.session_state)
     user_input = st.chat_input("Enter your query:")
-    
     if user_input:
-        # Store status container reference in session state
-        st.session_state.thinking_status = thinking_status
-        
-        # Clear previous thinking log
-        st.session_state.thinking_log = []
         st.session_state.processing = True
-        
-        # Display the thinking log expander
-        with thinking_status:
-            with st.expander("**🧠 Agent Thinking Process**", expanded=True):
-                st.markdown("_Initializing agent processing..._")
-        
         st.session_state.messages_data_agent.append({"role": "user", "content": f"{user_input}"})
         logging.info(f"User input in Data Agent: {user_input}")
         log_history_event(
-            st.session_state, 
-            "user_message", 
+            st.session_state,
+            "user_message",
             {"page": "data_agent", "content": user_input}
         )
         user_query = user_input
-        
         # Show "processing" message
         with message_placeholder:
-            st.info("Your request is being processed. You can see the progress below in the Agent Thinking Process panel.")
-        
-        response = create_and_invoke_supervisor_agent(user_query, datasets_info, st.session_state["memory"],
-                                                     st.session_state)
-        
+            st.info("Your request is being processed. You can see the progress below in the Agent Steps panel.")
+        # Instantiate the StreamlitCallbackHandler
+        st_callback = StreamlitCallbackHandler(
+            parent_container=callback_container,
+            max_thought_containers=4,
+            expand_new_thoughts=True,
+            collapse_completed_thoughts=False
+        )
+        response = create_and_invoke_supervisor_agent(
+            user_query,
+            datasets_info,
+            st.session_state["memory"],
+            st.session_state,
+            st_callback=st_callback
+        )
         if response:
             try:
                 new_content = response['messages'][-1].content
@@ -535,8 +533,8 @@ elif st.session_state.current_page == "data_agent":
                     "visualization_agent_used": visualization_used
                 })
                 log_history_event(
-                    st.session_state, 
-                    "assistant_message", 
+                    st.session_state,
+                    "assistant_message",
                     {"page": "data_agent", "content": new_content}
                 )
                 logging.info(f"Processed assistant response in Data Agent, content: {new_content}")
@@ -546,60 +544,6 @@ elif st.session_state.current_page == "data_agent":
                 logging.error(f"Error invoking graph: {e}")
                 st.error(f"An error occurred: {e}")
             message_placeholder.empty()
-        for message in st.session_state.messages_data_agent:
-            logging.info(f"Displaying message in Data Agent: {message['role']}")
-            if message["role"] == "system":
-                with st.chat_message(message["role"], avatar=SYSTEM_ICON):
-                    st.markdown(message["content"])
-            elif message["role"] == "user":
-                with st.chat_message(message["role"], avatar=USER_ICON):
-                    st.markdown(message["content"])
-            else:
-                with st.chat_message(message["role"], avatar=SYSTEM_ICON):
-                    st.markdown(message["content"])
-                    if "plot_images" in message:
-                        for plot_info in message["plot_images"]:
-                            if isinstance(plot_info, tuple):
-                                plot_path, code_path = plot_info
-                                if os.path.exists(plot_path):
-                                    col1, col2, col3 = st.columns([1, 2, 1])
-                                    with col2:
-                                        st.image(plot_path, caption='Generated Plot', use_container_width=True)
-                                    if os.path.exists(code_path):
-                                        with open(code_path, 'r') as f:
-                                            code = f.read()
-                                        st.code(code, language='python')
-                            else:
-                                if os.path.exists(plot_info):
-                                    col1, col2, col3 = st.columns([1, 2, 1])
-                                    with col2:
-                                        st.image(plot_info, caption='Generated Plot', use_container_width=True)
-                st.session_state.visualization_agent_used = False
-        for info in datasets_info:
-            logging.info(f"Displaying dataset in Data Agent: DOI {info['doi']}, type: {info['data_type']}")
-            with st.expander(f"Dataset: {info['name']}", expanded=False):
-                # Add clickable DOI link
-                st.markdown(f"**DOI:** [{info['doi']}]({info['doi']})")
-                st.write(f"**Name:** {info['name']}")
-                st.write(f"**Type:** {info['data_type']}")
-                if info['data_type'] == "pandas DataFrame":
-                    st.dataframe(info['dataset'])
-                    logging.info(f"Displayed DataFrame for DOI {info['doi']}")
-                elif info['data_type'] == "xarray Dataset":
-                    st.write(info['dataset'])  # Display string representation
-                    st.write("**Variables:**")
-                    st.write(list(info['dataset'].data_vars))
-                    st.write("**Attributes:**")
-                    st.write(info['dataset'].attrs)
-                    logging.info(f"Displayed xarray Dataset for DOI {info['doi']}")
-                elif info['data_type'] == "file folder":
-                    st.write(f"Files in folder: {info['df_head']}")
-                    logging.info(f"Displayed file folder for DOI {info['doi']}")
-                else:
-                    st.write("Unsupported data type")
-                    logging.warning(f"Unsupported data type displayed for DOI {info['doi']}")
-        if has_new_plot(st.session_state):
-            reset_new_plot_flag(st.session_state)
     else:
         for message in st.session_state.messages_data_agent:
             logging.info(f"Displaying message in Data Agent: {message['role']}")
@@ -639,19 +583,27 @@ elif st.session_state.current_page == "data_agent":
                 st.write(f"**Type:** {info['data_type']}")
                 if info['data_type'] == "pandas DataFrame":
                     st.dataframe(info['dataset'])
+                    if 'files' in info:
+                        st.write(f"**Files:** {', '.join(info['files'])}")
                     logging.info(f"Displayed DataFrame for DOI {info['doi']}")
                 elif info['data_type'] == "xarray Dataset":
-                    st.write(info['dataset'])  # Display string representation
                     st.write("**Variables:**")
                     st.write(list(info['dataset'].data_vars))
                     st.write("**Attributes:**")
                     st.write(info['dataset'].attrs)
+                    if 'files' in info:
+                        st.write(f"**Files:** {', '.join(info['files'])}")
                     logging.info(f"Displayed xarray Dataset for DOI {info['doi']}")
-                elif info['data_type'] == "file folder":
-                    st.write(f"Files in folder: {info['df_head']}")
-                    logging.info(f"Displayed file folder for DOI {info['doi']}")
+                elif info['data_type'] == "file folder" or info['data_type'] == "other":
+                    if 'files' in info:
+                        st.write(f"**Files:** {', '.join(info['files'])}")
+                    else:
+                        st.write(info['df_head'])
+                    logging.info(f"Displayed {info['data_type']} for DOI {info['doi']}")
                 else:
                     st.write("Unsupported data type")
+                    if 'files' in info:
+                        st.write(f"**Files:** {', '.join(info['files'])}")
                     logging.warning(f"Unsupported data type displayed for DOI {info['doi']}")
         if has_new_plot(st.session_state):
             reset_new_plot_flag(st.session_state)
