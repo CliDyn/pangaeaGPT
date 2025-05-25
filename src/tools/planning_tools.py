@@ -42,7 +42,9 @@ def planning_tool(user_query: str, conversation_history: str, available_agents: 
     - "What is the most common species?" → ONE task for DataFrameAgent
     - "Calculate the average temperature" → ONE task for DataFrameAgent
     - "Count how many records are in the dataset" → ONE task for DataFrameAgent
-    - "Show the distribution of species" → ONE task for VisualizationAgent
+    - "Show the distribution of species" → ONE task for EcologistAgent
+    - "Plot ocean temperature data" → ONE task for OceanographerAgent
+    - "Create a scatter plot" → ONE task for VisualizationAgent
     
     FORMAT YOUR RESPONSE AS A VALID JSON ARRAY where each item has:
     - "task": task description (be specific and include the complete action needed)
@@ -50,8 +52,10 @@ def planning_tool(user_query: str, conversation_history: str, available_agents: 
     - "status": "pending" (for new tasks), "in_progress", "completed", or "failed"
     
     AGENT SELECTION GUIDELINES:
-    - DataFrameAgent: Use for data analysis, filtering, counting, statistics, and identifying patterns
-    - VisualizationAgent: Use ONLY when the user explicitly requests a plot or when visualization would significantly enhance understanding
+    - OceanographerAgent: Use for marine/ocean data visualization, climate analysis, physical oceanography, temperature, salinity, currents, sea level data, and when working with ERA5 or Copernicus Marine data
+    - EcologistAgent: Use for biodiversity data visualization, species analysis, ecological patterns, biological/environmental studies. Does NOT have access to ERA5/Copernicus Marine tools
+    - VisualizationAgent: Use for general plotting and visualization tasks that don't specifically fall into oceanography or ecology categories
+    - DataFrameAgent: Use for data analysis, filtering, counting, statistics, finding patterns, and basic operations on tabular data
     """
     
     # Set current_plan to empty array if it's not provided

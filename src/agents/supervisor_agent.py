@@ -31,16 +31,21 @@ def create_supervisor_agent(user_query, datasets_info, memory):
         Graph: The compiled supervisor agent workflow
     """
     # Initialize agents
-    visualization_agent, dataframe_agent = initialize_agents(user_query, datasets_info)
-    logging.info("Initialized agents for workflow")
+    oceanographer_agent, ecologist_agent, visualization_agent, dataframe_agent = initialize_agents(user_query, datasets_info)
+    logging.info("Initialized all 4 agents for workflow")
 
-    # Dynamically build the members list
+
+    #members list building:
     members = []
+    if oceanographer_agent:
+        members.append("OceanographerAgent")
+    if ecologist_agent:
+        members.append("EcologistAgent")
     if visualization_agent:
         members.append("VisualizationAgent")
     if dataframe_agent:
         members.append("DataFrameAgent")
-    logging.info(f"Supervisor managing members: {members}")
+    logging.info(f"Supervisor managing 4 agent types: {members}")
 
     # Format dataset information for both planning and direct responses
     datasets_text = ""
@@ -84,12 +89,16 @@ For visualization and data analysis requests (like plotting, data manipulation, 
 
 ### Available Agents and Their Capabilities
 {', '.join(members)}
-- VisualizationAgent: Use for all plotting and visualization tasks. Always call it when request is related to the visualization.
-- DataFrameAgent: Use for simple data analysis, filtering, and manipulation
+- **OceanographerAgent**: Use for marine/ocean data visualization, climate analysis, physical oceanography, and when working with ERA5 or Copernicus Marine data. Specializes in temperature, salinity, currents, sea level data.
+- **EcologistAgent**: Use for biodiversity data visualization, species analysis, ecological patterns, and biological/environmental studies. Does NOT have access to ERA5/Copernicus Marine tools.
+- **VisualizationAgent**: Use for general plotting and visualization tasks that don't specifically fall into oceanography or ecology categories.
+- **DataFrameAgent**: Use for simple data analysis, filtering, manipulation, and statistical operations on tabular data.
 
 ### Examples of Correct Routing
 - User asks: "Summarize our conversation" → Set "next" to "RESPOND"
-- User asks: "Plot the data" → Set "next" to "VisualizationAgent"
+- "Plot ocean temperature data" → "OceanographerAgent"
+- "Analyze species distribution" → "EcologistAgent"
+- "Create a scatter plot" → "VisualizationAgent"
 - User asks: "Analyze trends" → Set "next" to "DataFrameAgent"
 - All tasks completed → Set "next" to "FINISH"
 
@@ -370,6 +379,17 @@ For visualization and data analysis requests (like plotting, data manipulation, 
         visualization_used = state.get("visualization_agent_used", False)
         plot_images = state.get("plot_images", [])
         logging.info(f"Visualization used: {visualization_used}, Plot images count: {len(plot_images)}")
+
+        for msg in all_messages:
+            if hasattr(msg, 'additional_kwargs') and 'plot_images' in msg.additional_kwargs:
+                agent_plot_images = msg.additional_kwargs.get('plot_images', [])
+                for img in agent_plot_images:
+                    if img and os.path.exists(img) and img not in plot_images:
+                        plot_images.append(img)
+                        logging.info(f"Found plot image from agent message: {img}")
+        
+        # Log the final collected plot images
+        logging.info(f"Total plot images after extraction: {len(plot_images)}, paths: {plot_images}")
         
         # 2. Get conversation history with validation
         all_messages = state.get("messages", [])
@@ -385,9 +405,17 @@ For visualization and data analysis requests (like plotting, data manipulation, 
         logging.info(f"Message types: {message_types}")
         
         # 3. Extract visualization messages specifically
+        oceanographer_messages = [msg for msg in all_messages 
+                                if hasattr(msg, 'name') and msg.name == "OceanographerAgent"]
+        ecologist_messages = [msg for msg in all_messages 
+                            if hasattr(msg, 'name') and msg.name == "EcologistAgent"]
         visualization_messages = [msg for msg in all_messages 
                                 if hasattr(msg, 'name') and msg.name == "VisualizationAgent"]
+        dataframe_messages = [msg for msg in all_messages 
+                            if hasattr(msg, 'name') and msg.name == "DataFrameAgent"]
         logging.info(f"Visualization messages count: {len(visualization_messages)}")
+
+        agent_messages = oceanographer_messages + ecologist_messages + visualization_messages + dataframe_messages
         
         # 4. Extract latest user query with validation
         user_messages = [msg for msg in all_messages if not hasattr(msg, 'name') or not msg.name]
@@ -434,16 +462,31 @@ For visualization and data analysis requests (like plotting, data manipulation, 
         logging.info(f"datasets_text preview: {datasets_text[:200]}...")
         
         # Format visualization information
-        visualization_info = ""
-        if visualization_used or visualization_messages:
-            visualization_info = "The VisualizationAgent was used in this conversation.\n"
-            if visualization_messages:
-                recent_vis_content = visualization_messages[-1].content
-                visualization_info += f"Most recent visualization analysis: {recent_vis_content[:100]}...\n"
+        agent_info = ""
+        agents_used = []
+
+        # Check which agents were used
+        if oceanographer_messages:
+            agents_used.append("OceanographerAgent")
+        if ecologist_messages:
+            agents_used.append("EcologistAgent") 
+        if visualization_messages:
+            agents_used.append("VisualizationAgent")
+        if dataframe_messages:
+            agents_used.append("DataFrameAgent")
+
+        # Build agent info string
+        if agents_used:
+            agent_info = f"The following specialized agents were used in this conversation: {', '.join(agents_used)}.\n"
+            
+            # Get the most recent agent message from ANY agent
+            if agent_messages:  # NOW WE USE agent_messages!
+                recent_agent_content = agent_messages[-1].content
+                agent_info += f"Most recent agent analysis: {recent_agent_content[:100]}...\n"
+            
+            # Add plot information
             if plot_images:
-                visualization_info += f"Plots were generated and are available at: {', '.join(plot_images)}\n"
-        
-        logging.info(f"Visualization info length: {len(visualization_info)}")
+                agent_info += f"Plots were generated and are available.\n"
         
         # Get agent context
         last_agent_message = state.get("last_agent_message", "")
@@ -456,9 +499,9 @@ For visualization and data analysis requests (like plotting, data manipulation, 
 
 {datasets_text}
 
-{visualization_info}
+{agent_info}
 Always address the latest user query directly, even if it is similar to previous queries. You can acknowledge repetition (e.g., 'As I mentioned earlier...') and reference previous answers if relevant, but ensure each query receives a clear and complete response. For complex queries, follow these agent guidelines:
-- Use VisualizationAgent for general plotting
+
 Format any code in markdown and keep responses concise.
 
 The last agent that processed this request said: {last_agent_message}
@@ -472,8 +515,8 @@ Please provide a response to the latest user query, taking into account the conv
             # Check for template literals that weren't substituted
             if "{datasets_text}" in system_message:
                 logging.error("ERROR: '{datasets_text}' template literal found in system message!")
-            if "{visualization_info}" in system_message:
-                logging.error("ERROR: '{visualization_info}' template literal found in system message!")
+            if "{agent_info}" in system_message:
+                logging.error("ERROR: '{agent_info}' template literal found in system message!")
             
             # Log the first part of the system message
             logging.info(f"System message preview: {system_message[:300]}...")
@@ -509,7 +552,7 @@ Please provide a response to the latest user query, taking into account the conv
             "system_message": len(system_message),
             "conversation_history": len(full_history),
             "datasets_text": len(datasets_text),
-            "visualization_info": len(visualization_info),
+            "agent_info": len(agent_info),
             "last_agent_message": len(last_agent_message),
             "latest_user_query": len(latest_user_query)
         }
@@ -529,12 +572,23 @@ Please provide a response to the latest user query, taking into account the conv
         
         # Update state and return
         try:
-            # IMPORTANT: Instead of creating a new state, modify the existing one
-            # This preserves all the existing information including plot_images
-            state["messages"] = state.get("messages", []) + [
-                AIMessage(content=response.content, name="Supervisor")
-            ]
+            # IMPORTANT: Create the final message WITH plot_images included
+            final_message = AIMessage(
+                content=response.content, 
+                name="Supervisor",
+                additional_kwargs={
+                    "plot_images": plot_images,  # Include the collected plot images
+                    "oceanographer_used": state.get("oceanographer_agent_used", False),
+                    "ecologist_used": state.get("ecologist_agent_used", False),
+                    "visualization_used": state.get("visualization_agent_used", False)
+                }
+            )
+            
+            state["messages"] = state.get("messages", []) + [final_message]
             state["next"] = "FINISH"
+            
+            # Ensure plot_images are preserved in state
+            state["plot_images"] = plot_images
             
             # Final state validation
             logging.info(f"Final state keys: {list(state.keys())}")
@@ -568,6 +622,12 @@ Please provide a response to the latest user query, taking into account the conv
     workflow = StateGraph(AgentState)
 
     # Add nodes
+    if oceanographer_agent:
+        workflow.add_node("OceanographerAgent", 
+                         functools.partial(agent_node, agent=oceanographer_agent, name="OceanographerAgent"))
+    if ecologist_agent:
+        workflow.add_node("EcologistAgent", 
+                         functools.partial(agent_node, agent=ecologist_agent, name="EcologistAgent"))
     if visualization_agent:
         workflow.add_node("VisualizationAgent", 
                          functools.partial(agent_node, agent=visualization_agent, name="VisualizationAgent"))
@@ -659,6 +719,18 @@ def create_and_invoke_supervisor_agent(user_query: str, datasets_info: list, mem
     try:
         response = graph.invoke(initial_state, config=config)
         session_data["processing"] = False
+        
+        # CRITICAL: Ensure plot_images are passed to the response
+        if "plot_images" not in response:
+            response["plot_images"] = []
+        
+        # Extract plot_images from the final message if needed
+        if response.get("messages"):
+            last_msg = response["messages"][-1]
+            if hasattr(last_msg, 'additional_kwargs') and 'plot_images' in last_msg.additional_kwargs:
+                response["plot_images"] = last_msg.additional_kwargs.get("plot_images", [])
+                logging.info(f"Extracted {len(response['plot_images'])} plot images from final message")
+        
         return response
     except Exception as e:
         session_data["processing"] = False

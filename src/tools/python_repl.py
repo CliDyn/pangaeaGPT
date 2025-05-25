@@ -25,20 +25,6 @@ class CustomPythonREPLTool(PythonREPLTool):
         self._datasets = datasets
 
     def _run(self, query: str, **kwargs) -> Any:
-        """
-        Execute the user-provided Python code in a local context containing:
-        - st (Streamlit)
-        - plt (Matplotlib Pyplot)
-        - pd (Pandas)
-        - All loaded dataset variables (self._datasets)
-        - Path variables for each dataset (dataset_1_path, dataset_2_path, etc.)
-        - A dynamically generated plot_path
-        
-        If a figure is saved to plot_path, a "plot_generated" event will be logged.
-        
-        Returns:
-            dict: Results including output and paths to any generated plots
-        """
         import streamlit as st
         import matplotlib.pyplot as plt
         import pandas as pd
@@ -46,7 +32,7 @@ class CustomPythonREPLTool(PythonREPLTool):
         import os
         import logging
         from io import StringIO
-        from src.utils import log_history_event, generate_unique_image_path
+        from src.utils import log_history_event
 
         # Prepare local context with necessary packages
         local_context = {
@@ -60,6 +46,37 @@ class CustomPythonREPLTool(PythonREPLTool):
         # Inject the user's datasets
         local_context.update(self._datasets)
         
+        # Extract the sandbox directory from the datasets
+        sandbox_path = None
+        
+        # First check if uuid_main_dir is in datasets (it's added by visualization agents)
+        if "uuid_main_dir" in self._datasets:
+            sandbox_path = self._datasets["uuid_main_dir"]
+            logging.info(f"Found uuid_main_dir for plots: {sandbox_path}")
+        else:
+            # Otherwise, try to find it from dataset paths
+            for key, value in self._datasets.items():
+                if isinstance(value, str) and os.path.isdir(value) and "sandbox" in value:
+                    # Get the parent directory (sandbox UUID directory)
+                    potential_sandbox = os.path.dirname(os.path.abspath(value))
+                    if "sandbox" in potential_sandbox:
+                        sandbox_path = potential_sandbox
+                        logging.info(f"Extracted sandbox path from {key}: {sandbox_path}")
+                        break
+        
+        # Create and provide the results directory
+        if sandbox_path:
+            results_dir = os.path.join(sandbox_path, 'results')
+            os.makedirs(results_dir, exist_ok=True)
+            local_context['results_dir'] = results_dir
+            logging.info(f"Created/verified results directory: {results_dir}")
+        else:
+            # Fallback to tmp/figs if no sandbox
+            results_dir = os.path.join('tmp', 'figs')
+            os.makedirs(results_dir, exist_ok=True)
+            local_context['results_dir'] = results_dir
+            logging.warning(f"No sandbox found, using fallback results directory: {results_dir}")
+        
         # Add dataset path variables for any string paths (sandbox directories)
         for key, value in self._datasets.items():
             if isinstance(value, str) and os.path.isdir(value):
@@ -72,13 +89,15 @@ class CustomPythonREPLTool(PythonREPLTool):
                 # Also log which path variables are available
                 logging.info(f"Added path variable {path_var_name} = {abs_path}")
 
-        # Generate a unique file path for the plot
-        plot_path = generate_unique_image_path()
-        local_context['plot_path'] = plot_path
-        
         # Log the code being executed for debugging
         logging.info(f"Executing code with available variables: {list(local_context.keys())}")
+        logging.info(f"Results directory available at: {results_dir}")
         logging.info(f"Code to execute:\n{query}")
+
+        # Get list of image files BEFORE execution
+        before_exec = set()
+        if os.path.exists(results_dir):
+            before_exec = set(os.listdir(results_dir))
 
         # Redirect stdout to capture output
         old_stdout = sys.stdout
@@ -86,6 +105,7 @@ class CustomPythonREPLTool(PythonREPLTool):
         sys.stdout = redirected_output
 
         plot_generated = False
+        generated_plots = []
         output = ""
         
         try:
@@ -93,52 +113,59 @@ class CustomPythonREPLTool(PythonREPLTool):
             exec(query, local_context)
             output = redirected_output.getvalue()
             
-            # Check if plt.savefig was used or figure was created
-            if os.path.exists(plot_path):
-                plot_generated = True
+            # Check if any plots were saved to results_dir
+            if os.path.exists(results_dir):
+                # Re-check after execution
+                import time
+                time.sleep(0.1)  # Brief pause to ensure file is written
+                after_exec = set(os.listdir(results_dir))
                 
-                # Store the path in session state for UI to display
-                st.session_state.saved_plot_path = plot_path
-                st.session_state.plot_image = plot_path
-                st.session_state.new_plot_path = plot_path
-                st.session_state.new_plot_generated = True
+                # Find new files
+                new_files = after_exec - before_exec
                 
-                # Log the plot generation
-                status_message = f"Plot generated = True. Saved at: {plot_path}"
-                logging.info(f"Plot generated successfully and saved to: {plot_path}")
-                st.session_state.plot_generated_status = status_message
+                # Check for new image files
+                image_extensions = ('.png', '.jpg', '.jpeg', '.svg', '.pdf')
+                new_images = [f for f in new_files if f.lower().endswith(image_extensions)]
                 
-                log_history_event(
-                    st.session_state,
-                    "plot_generated",
-                    {
-                        "plot_path": plot_path.replace("sandbox:", ""),  # Remove sandbox prefix
-                        "agent": "VisualizationAgent",
-                        "description": "Python_REPL Generated Plot",
-                        "content": query  # Store the actual code used
-                    }
-                )
-            else:
-                # If no plot was generated, check if we need to give feedback about path issues
-                if '/mnt/data' in query:
-                    error_msg = "ERROR: Detected invalid path '/mnt/data'. You must use the provided dataset path variables."
-                    logging.warning(error_msg)
-                    output += f"\n\n{error_msg}"
-                
-                if "plot_path" in query and "plt.savefig" not in query:
-                    warning_msg = "WARNING: You defined plot_path but didn't use plt.savefig(plot_path). Plots won't be displayed."
-                    logging.warning(warning_msg)
-                    output += f"\n\n{warning_msg}"
+                if new_images:
+                    plot_generated = True
+                    for img_file in new_images:
+                        img_path = os.path.join(results_dir, img_file)
+                        generated_plots.append(img_path)
+                        logging.info(f"Found newly generated plot: {img_path}")
+                    
+                    # Store paths in session state
+                    if generated_plots:
+                        st.session_state.saved_plot_path = generated_plots[0]
+                        st.session_state.plot_image = generated_plots[0]
+                        st.session_state.new_plot_path = generated_plots[0]
+                        st.session_state.new_plot_generated = True
+                        
+                        log_history_event(
+                            st.session_state,
+                            "plot_generated",
+                            {
+                                "plot_paths": generated_plots,
+                                "agent": "VisualizationAgent",
+                                "description": "Plots generated in results directory",
+                                "content": query
+                            }
+                        )
 
-            # KEY CHANGE: Include output in the result string
-            result_message = f"Execution completed. Plot saved at: {plot_path if plot_generated else 'No plot generated'}"
+            # Include output in the result string
+            result_message = f"Execution completed. "
+            if plot_generated:
+                result_message += f"Plots saved to results directory: {', '.join([os.path.basename(p) for p in generated_plots])}"
+            else:
+                result_message += "No plots generated."
+            
             if output.strip():
                 result_message += f"\n\nOutput:\n{output}"
 
             return {
-                "result": result_message,  # Now includes the console output
+                "result": result_message,
                 "output": output,
-                "plot_images": [plot_path] if plot_generated else []
+                "plot_images": generated_plots
             }
         except Exception as e:
             logging.error(f"Error during code execution: {e}")
@@ -154,7 +181,7 @@ class CustomPythonREPLTool(PythonREPLTool):
                 error_output += "3. The file you're trying to access actually exists\n\n"
                 error_output += "Available path variables:\n"
                 for key in local_context:
-                    if key.endswith('_path'):
+                    if key.endswith('_path') or key == 'results_dir':
                         error_output += f"- {key}: {local_context[key]}\n"
             
             elif "ModuleNotFoundError" in str(e):
@@ -162,21 +189,15 @@ class CustomPythonREPLTool(PythonREPLTool):
                 error_output += f"Missing module: {module_name}\n"
                 error_output += "You can install it using the install_package tool."
             
-            elif "name 'data' is not defined" in str(e) or "not defined" in str(e):
-                var_name = str(e).split("'")[1] if "'" in str(e) else "unknown"
-                error_output += f"Variable '{var_name}' is not defined. Available variables:\n"
-                error_output += f"- Dataset variables: {[k for k in self._datasets.keys()]}\n"
-                error_output += f"- Path variables: {[k for k in local_context.keys() if k.endswith('_path')]}\n"
-                error_output += "Make sure you're using the correct variable names."
-            
             # Add any output that was generated before the error occurred
             if console_output:
                 error_output += f"\nOutput before error:\n{console_output}"
             
             return {
                 "error": "ExecutionError",
-                "message": error_output,  # Now includes both error details and console output
-                "output": console_output
+                "message": error_output,
+                "output": console_output,
+                "plot_images": []  # Return empty list on error
             }
         finally:
             # Restore stdout

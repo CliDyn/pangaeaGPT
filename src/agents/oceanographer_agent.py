@@ -1,4 +1,4 @@
-# src/agents/visualization_agent.py 
+# src/agents/oceanographer_agent.py
 import os
 import logging
 import streamlit as st
@@ -21,7 +21,7 @@ from ..tools.visualization_tools import (
 from ..tools.era5_retrieval_tool import era5_retrieval_tool
 from ..tools.copernicus_marine_tool import copernicus_marine_tool
 
-def create_visualization_agent(user_query, datasets_info):
+def create_oceanographer_agent(user_query, datasets_info):
     """
     Creates a visualization agent for plotting and data visualization.
     
@@ -38,10 +38,13 @@ def create_visualization_agent(user_query, datasets_info):
     datasets = {}
     
     # Extract the main UUID directory (parent directory of first dataset's sandbox path)
+    # This is the common parent directory all datasets are stored in
     uuid_main_dir = None
     for i, info in enumerate(datasets_info):
+        # Use sandbox_path instead of dataset, as dataset might be a DataFrame object
         sandbox_path = info.get('sandbox_path')
         if sandbox_path and isinstance(sandbox_path, str) and os.path.isdir(sandbox_path):
+            # Get the parent directory (UUID directory)
             uuid_main_dir = os.path.dirname(os.path.abspath(sandbox_path))
             logging.info(f"Found main UUID directory from sandbox_path: {uuid_main_dir}")
             break
@@ -54,10 +57,10 @@ def create_visualization_agent(user_query, datasets_info):
         except Exception as e:
             logging.error(f"Error listing UUID directory files: {str(e)}")
     
-    # Add the UUID directory to the datasets dict
+    # Add the UUID directory to the datasets dict so it can be accessed
     datasets["uuid_main_dir"] = uuid_main_dir
     
-    # Add the results directory for natural saving
+    # ALSO add the results directory for natural saving
     if uuid_main_dir:
         results_dir = os.path.join(uuid_main_dir, 'results')
         os.makedirs(results_dir, exist_ok=True)
@@ -73,28 +76,31 @@ def create_visualization_agent(user_query, datasets_info):
         uuid_paths += f"# MAIN OUTPUT DIRECTORY - YOUR WORKSPACE:\n"
         uuid_paths += f"uuid_main_dir = r'{uuid_main_dir}'\n"
         uuid_paths += f"results_dir = r'{results_dir}'  # 📁 Save all plots here!\n\n"
-        uuid_paths += f"# Files currently in main directory: {', '.join(uuid_dir_files) if uuid_dir_files else 'None'}\n\n"         
-    
+        uuid_paths += f"# Files currently in main directory: {', '.join(uuid_dir_files) if uuid_dir_files else 'None'}\n\n"
+         
     # First list all datasets with their paths
     for i, info in enumerate(datasets_info):
         var_name = f"dataset_{i + 1}"
-        datasets[var_name] = info['dataset']
+        datasets[var_name] = info['dataset']  # Sandbox path or dataset object
         dataset_variables.append(var_name)
         
         # Add the FULL UUID PATH for each dataset
         if isinstance(info['dataset'], str) and os.path.isdir(info['dataset']):
+            # Get the absolute path and ensure it has forward slashes for consistency
             full_uuid_path = os.path.abspath(info['dataset']).replace('\\', '/')
             
+            # Create the path variable assignment with proper escaping
             uuid_paths += f"# Dataset {i+1}: {info['name']}\n"
             uuid_paths += f"{var_name}_path = r'{full_uuid_path}'\n\n"
             
+            # Check if the directory exists and list its contents
             if os.path.exists(full_uuid_path):
                 try:
                     files = os.listdir(full_uuid_path)
                     uuid_paths += f"# Files available in {var_name}_path:\n"
                     uuid_paths += f"# {', '.join(files)}\n\n"
                     
-                    # Add dataset-specific examples
+                    # Now add dataset-specific examples based on actual files
                     uuid_paths += f"# DATASET-SPECIFIC WORKING CODE EXAMPLES FOR {var_name}:\n"
                     
                     # Example for listing files
@@ -122,7 +128,7 @@ def create_visualization_agent(user_query, datasets_info):
                         uuid_paths += f"ds = xr.open_dataset(nc_path)\n"
                         uuid_paths += f"print(ds)\n\n"
                     
-                    # Plotting example using results_dir
+                    # Plotting example specific to this dataset
                     if any(f.endswith('.csv') for f in files):
                         csv_file = next(f for f in files if f.endswith('.csv'))
                         uuid_paths += f"# Example: Create plot using data from {var_name}_path\n"
@@ -135,13 +141,14 @@ def create_visualization_agent(user_query, datasets_info):
                         uuid_paths += f"plt.plot(df.index, df.iloc[:, 0])\n"
                         uuid_paths += f"plt.title('Data from {info['name']}')\n"
                         uuid_paths += f"# Save to results directory with descriptive name\n"
-                        uuid_paths += f"plt.savefig(os.path.join(results_dir, 'my_plot.png'))\n\n"
+                        uuid_paths += f"plt.savefig(os.path.join(results_dir, 'ocean_data_plot.png'))\n\n"
                     
                 except Exception as e:
                     uuid_paths += f"# Error listing files: {str(e)}\n\n"
             
             uuid_paths += f"# ⚠️ WARNING: ALWAYS USE THE EXACT PATH WITH os.path.join({var_name}_path, 'filename')! ⚠️\n\n"
         else:
+            # For non-directory datasets (like pandas DataFrames)
             uuid_paths += f"# Dataset {i+1}: {info['name']} (in-memory dataset, not a directory)\n"
             uuid_paths += f"# Access this dataset directly with the variable name '{var_name}'\n\n"
     
@@ -151,7 +158,7 @@ def create_visualization_agent(user_query, datasets_info):
     uuid_paths += "# 2. ALWAYS use the exact dataset_X_path variables shown above\n"
     uuid_paths += "# 3. ALWAYS check which files exist before trying to read them\n\n"
     
-    # Continue with standard dataset info
+    # Continue with standard dataset info after the path examples
     for i, info in enumerate(datasets_info):
         var_name = f"dataset_{i + 1}"
         datasets_text += (
@@ -170,7 +177,7 @@ def create_visualization_agent(user_query, datasets_info):
     st.session_state["viz_datasets_text"] = datasets_text
     
     # Generate the prompt with the modified datasets_text
-    prompt = Prompts.generate_visualization_agent_system_prompt(user_query, datasets_text, dataset_variables)
+    prompt = Prompts.generate_oceanographer_agent_system_prompt(user_query, datasets_text, dataset_variables)
   
     # Initialize the LLM
     llm = ChatOpenAI(api_key=API_KEY, model_name=st.session_state.model_name)
@@ -191,14 +198,13 @@ def create_visualization_agent(user_query, datasets_info):
     ]
     
     # Create the agent with the updated prompt and tools
-    # IMPORTANT: Remove plot_path from the expected variables
     agent_visualization = create_openai_tools_agent(
         llm,
         tools=tools_vis,
         prompt=ChatPromptTemplate.from_messages(
             [
                 ("system", prompt),
-                ("user", "{input}"),
+                ("user", "{input}"),  # THIS LINE IS KEY - ensures task info is passed
                 MessagesPlaceholder(variable_name="messages"),
                 MessagesPlaceholder(variable_name="agent_scratchpad")
             ]
@@ -216,39 +222,23 @@ def create_visualization_agent(user_query, datasets_info):
 
 def initialize_agents(user_query, datasets_info):
     """
-    Initializes all 4 specialized agents based on available dataset types.
+    Initializes agents based on available dataset types.
     
     Args:
         user_query (str): The user's query
         datasets_info (list): Information about available datasets
         
     Returns:
-        tuple: (oceanographer_agent, ecologist_agent, visualization_agent, dataframe_agent)
+        tuple: (oceanographer_agent, dataframe_agent)
     """
     if datasets_info:
-        # Create all 4 specialized agents
-        
-        # 1. Create OceanographerAgent (marine/climate data + ERA5 + Copernicus)
-        from .oceanographer_agent import create_oceanographer_agent
+        # Create visualization agent
         oceanographer_agent = create_oceanographer_agent(
             user_query=user_query,
             datasets_info=datasets_info
         )
-        
-        # 2. Create EcologistAgent (biodiversity/ecological data, no ERA5/Copernicus)
-        from .ecologist_agent import create_ecologist_agent
-        ecologist_agent = create_ecologist_agent(
-            user_query=user_query,
-            datasets_info=datasets_info
-        )
-        
-        # 3. Create VisualizationAgent (general visualization, all tools)
-        visualization_agent = create_visualization_agent(
-            user_query=user_query,
-            datasets_info=datasets_info
-        )
 
-        # 4. Create DataFrameAgent (only for pandas DataFrames)
+        # Only create DataFrameAgent if there are pandas DataFrames
         dataframe_agent = None
         dataframe_datasets = [info for info in datasets_info if isinstance(info['dataset'], pd.DataFrame)]
         if dataframe_datasets:
@@ -261,9 +251,8 @@ def initialize_agents(user_query, datasets_info):
         else:
             logging.info("No pandas DataFrames available; skipping DataFrameAgent initialization")
 
-        logging.info("All 4 agents initialized successfully")
-        return oceanographer_agent, ecologist_agent, visualization_agent, dataframe_agent
+        return oceanographer_agent, dataframe_agent
     else:
         st.warning("No datasets loaded. Please load datasets first.")
         logging.warning("No datasets provided to initialize_agents")
-        return None, None, None, None
+        return None, None

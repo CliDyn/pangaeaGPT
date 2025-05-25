@@ -35,7 +35,11 @@ def initialize_session_state(session_state: dict):
         "dataset_names": {},
         "saved_plot_paths": {},
         "memory": MemorySaver(),
+        "oceanographer_agent_used": False,
+        "ecologist_agent_used": False,
         "visualization_agent_used": False,
+        "dataframe_agent_used": False,
+        "specialized_agent_used": False,
         "chat_history": ChatMessageHistory(session_id="search-agent-session"),
         "search_method": "PANGAEA Search (default)",
         "selected_text": "",
@@ -318,12 +322,19 @@ def add_user_message_to_data_agent(user_input: str, session_data: dict):
     session_data["messages_data_agent"].append({"role": "user", "content": f"{user_input}"})
 
 
-def add_assistant_message_to_data_agent(content: str, plot_images, visualization_agent_used, session_data: dict):
+def add_assistant_message_to_data_agent(content: str, plot_images, agent_usage_flags, session_data: dict):
+    """
+    UPDATED: Now accepts agent_usage_flags dict instead of single visualization flag
+    """
     new_message = {
         "role": "assistant",
         "content": content,
         "plot_images": plot_images if plot_images else [],
-        "visualization_agent_used": visualization_agent_used
+        "oceanographer_used": agent_usage_flags.get("oceanographer_used", False),
+        "ecologist_used": agent_usage_flags.get("ecologist_used", False),
+        "visualization_used": agent_usage_flags.get("visualization_used", False),
+        "dataframe_used": agent_usage_flags.get("dataframe_used", False),
+        "specialized_agent_used": agent_usage_flags.get("specialized_agent_used", False)
     }
     session_data["messages_data_agent"].append(new_message)
 

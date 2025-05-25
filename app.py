@@ -12,7 +12,7 @@ import uuid
 import base64
 from pathlib import Path
 
-
+from src.ui.directory_explorer import render_directory_explorer
 import src.config as config
 from src.config import DEPLOYMENT_MODE
 # ------------------------------------------------------------------
@@ -176,6 +176,13 @@ from langchain_community.callbacks.streamlit import StreamlitCallbackHandler
 
 # === Step 6: Initialize Session State ===
 initialize_session_state(st.session_state)
+
+if "oceanographer_agent_used" not in st.session_state:
+    st.session_state.oceanographer_agent_used = False
+if "ecologist_agent_used" not in st.session_state:
+    st.session_state.ecologist_agent_used = False  
+if "dataframe_agent_used" not in st.session_state:
+    st.session_state.dataframe_agent_used = False
 
 # === Step 7: Load Custom UI Styles (for example, CSS) ===
 st.markdown(CUSTOM_UI, unsafe_allow_html=True)
@@ -404,6 +411,7 @@ if st.session_state.current_page == "search":
                             set_dataset_for_data_agent(st.session_state, doi, csv_data, dataset, name)
     message_placeholder = st.empty()
 
+
 # -------------------------
 # DATA AGENT PAGE
 # -------------------------
@@ -488,6 +496,9 @@ elif st.session_state.current_page == "data_agent":
     callback_container = st.container()
     st.markdown("---") # Optional separator
 
+    #Render Directory
+    render_directory_explorer()
+
     # --- Existing Code Continues Below ---
     datasets_info = get_datasets_info_for_active_datasets(st.session_state)
     logging.info(f"Loaded {len(datasets_info)} datasets for Data Agent")
@@ -524,12 +535,44 @@ elif st.session_state.current_page == "data_agent":
         if response:
             try:
                 new_content = response['messages'][-1].content
-                plot_images = response.get("plot_images", [])
+                
+                # FIXED: Only get plot_images from the CURRENT execution
+                plot_images = []
+                
+                # 1. Check if response has plot_images
+                if 'plot_images' in response and response['plot_images']:
+                    plot_images = response.get("plot_images", [])
+                    logging.info(f"Found {len(plot_images)} plots in response")
+                
+                # 2. If not in response, check ONLY the last message
+                if not plot_images:
+                    last_msg = response['messages'][-1]
+                    if hasattr(last_msg, 'additional_kwargs') and 'plot_images' in last_msg.additional_kwargs:
+                        plot_images = last_msg.additional_kwargs.get("plot_images", [])
+                        logging.info(f"Found {len(plot_images)} plots in last message")
+                
+                # 3. Validate that plot files actually exist
+                plot_images = [img for img in plot_images if img and os.path.exists(img)]
+                
+                logging.info(f"Final plot_images for THIS response: {plot_images}")
+                
+                oceanographer_used = response.get("oceanographer_agent_used", False)
+                ecologist_used = response.get("ecologist_agent_used", False)
                 visualization_used = response.get("visualization_agent_used", False)
+                
+                # Extract from last message if not in response
+                if hasattr(response['messages'][-1], 'additional_kwargs'):
+                    last_kwargs = response['messages'][-1].additional_kwargs
+                    oceanographer_used = oceanographer_used or last_kwargs.get("oceanographer_used", False)
+                    ecologist_used = ecologist_used or last_kwargs.get("ecologist_used", False)
+                    visualization_used = visualization_used or last_kwargs.get("visualization_used", False)
+                
                 st.session_state.messages_data_agent.append({
                     "role": "assistant",
                     "content": new_content,
-                    "plot_images": plot_images,
+                    "plot_images": plot_images,  # Only images from THIS execution
+                    "oceanographer_used": oceanographer_used,
+                    "ecologist_used": ecologist_used,
                     "visualization_agent_used": visualization_used
                 })
                 log_history_event(
@@ -538,6 +581,7 @@ elif st.session_state.current_page == "data_agent":
                     {"page": "data_agent", "content": new_content}
                 )
                 logging.info(f"Processed assistant response in Data Agent, content: {new_content}")
+                logging.info(f"Added {len(plot_images)} plot images to THIS message")
                 message_placeholder.empty()
                 st.rerun()
             except Exception as e:
@@ -545,8 +589,10 @@ elif st.session_state.current_page == "data_agent":
                 st.error(f"An error occurred: {e}")
             message_placeholder.empty()
     else:
+        # Display existing messages
         for message in st.session_state.messages_data_agent:
             logging.info(f"Displaying message in Data Agent: {message['role']}")
+            
             if message["role"] == "system":
                 with st.chat_message(message["role"], avatar=SYSTEM_ICON):
                     st.markdown(message["content"])
@@ -556,7 +602,9 @@ elif st.session_state.current_page == "data_agent":
             else:
                 with st.chat_message(message["role"], avatar=SYSTEM_ICON):
                     st.markdown(message["content"])
-                    if "plot_images" in message:
+                    # Display ONLY the plot images that belong to THIS specific message
+                    if "plot_images" in message and message["plot_images"]:
+                        logging.info(f"Message has {len(message['plot_images'])} plot images")
                         for plot_info in message["plot_images"]:
                             if isinstance(plot_info, tuple):
                                 plot_path, code_path = plot_info
@@ -569,11 +617,17 @@ elif st.session_state.current_page == "data_agent":
                                             code = f.read()
                                         st.code(code, language='python')
                             else:
+                                # Only show if the file still exists (handles sandbox switching)
                                 if os.path.exists(plot_info):
+                                    logging.info(f"Displaying plot: {plot_info}")
                                     col1, col2, col3 = st.columns([1, 2, 1])
                                     with col2:
                                         st.image(plot_info, caption='Generated Plot', use_container_width=True)
+                                else:
+                                    logging.warning(f"Plot file no longer exists (different sandbox?): {plot_info}")
                 st.session_state.visualization_agent_used = False
+        
+        # Display datasets info
         for info in datasets_info:
             logging.info(f"Displaying dataset in Data Agent: DOI {info['doi']}, type: {info['data_type']}")
             with st.expander(f"Dataset: {info['name']}", expanded=False):

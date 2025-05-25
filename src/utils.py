@@ -1,5 +1,4 @@
-# src/utils.py
-
+# src/utils.py - Updated generate_unique_image_path function
 
 import os
 import uuid
@@ -12,12 +11,32 @@ import time
 import json
 
 # Generate a unique image path for saving plots
-def generate_unique_image_path():
-    figs_dir = os.path.join('tmp', 'figs')
-    os.makedirs(figs_dir, exist_ok=True)
+def generate_unique_image_path(sandbox_path=None):
+    """
+    Generate a unique image path for saving plots.
+    
+    Args:
+        sandbox_path: Optional path to the current sandbox directory.
+                     If provided, saves to sandbox/results/ instead of tmp/figs/
+    
+    Returns:
+        str: Full path to save the image
+    """
     unique_filename = f'fig_{uuid.uuid4()}.png'
-    unique_path = os.path.join(figs_dir, unique_filename)
-    logging.debug(f"Generated unique image path: {unique_path}")
+    logging.info(f"DEBUG generate_unique_image_path called with sandbox_path: {sandbox_path}")
+    if sandbox_path and os.path.exists(sandbox_path):
+        # Save to sandbox/results/ directory
+        results_dir = os.path.join(sandbox_path, 'results')
+        os.makedirs(results_dir, exist_ok=True)
+        unique_path = os.path.join(results_dir, unique_filename)
+        logging.debug(f"Generated sandbox image path: {unique_path}")
+    else:
+        # Fallback to original behavior
+        figs_dir = os.path.join('tmp', 'figs')
+        os.makedirs(figs_dir, exist_ok=True)
+        unique_path = os.path.join(figs_dir, unique_filename)
+        logging.debug(f"Generated default image path: {unique_path}")
+    
     return unique_path
 
 

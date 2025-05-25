@@ -282,7 +282,7 @@ def retrieve_era5_data(
         elif "cannot import name 'Blosc' from 'zarr.codecs'" in error_msg:
             error_msg += " (Blosc not found in zarr.codecs, ensure zarr & numcodecs are installed correctly and versions are compatible. Using numcodecs.Blosc instead.)"
         return {"success": False, "error": error_msg, "message": f"Failed to retrieve ERA5 data due to AttributeError or ImportError: {error_msg}"}
-
+        
     except Exception as e:
         logging.error(f"Error in ERA5 retrieval: {e}", exc_info=True)
         error_msg = str(e)
