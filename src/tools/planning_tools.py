@@ -34,7 +34,7 @@ def planning_tool(user_query: str, conversation_history: str, available_agents: 
     3. Status tracking (pending, in_progress, completed, failed)
     
     CRITICAL PLANNING GUIDELINES:
-    - SIMPLICITY IS KEY: Create the MINIMUM number of tasks needed (1-2 tasks if possible)
+    - SIMPLICITY IS KEY: Create the MINIMUM number of tasks needed - usually 1-2 tasks, but complex workflows may require more
     - AVOID TASK SPLITTING: For simple queries that can be solved in one step, create JUST ONE task
     - DIRECT IMPLEMENTATION: For basic operations like counting, finding maximums, or calculating statistics, use a SINGLE task
     
@@ -46,6 +46,20 @@ def planning_tool(user_query: str, conversation_history: str, available_agents: 
     - "Plot ocean temperature data" → ONE task for OceanographerAgent
     - "Create a scatter plot" → ONE task for VisualizationAgent
     
+    Examples of queries that should be SPLIT INTO MULTIPLE TASKS:
+    - "Create an SDM (Species Distribution Model) map" → TWO tasks:
+    Task 1: OceanographerAgent - "Retrieve current ocean environmental data (temperature, salinity, chlorophyll) from Copernicus Marine for the study region"
+    Task 2: EcologistAgent - "Create SDM map using MaxEnt or sdmpredictors package with species occurrence data and environmental layers"
+
+    - "Perform advanced oceanographic statistical analysis with climate indices" → TWO tasks:
+    Task 1: OceanographerAgent - "Download ERA5 atmospheric and Copernicus ocean data, calculate climate indices (NAO, AMO, PDO)"
+    Task 2: DataFrameAgent - "Perform wavelet coherence analysis and cross-correlation with scipy.signal to identify teleconnections"
+
+    SPLIT TASK RULES:
+    - Data retrieval (ERA5/Copernicus) → OceanographerAgent first
+    - Complex analysis requiring the data → Appropriate specialist agent second
+    - Each task should be self-contained with clear outputs for the next task
+
     FORMAT YOUR RESPONSE AS A VALID JSON ARRAY where each item has:
     - "task": task description (be specific and include the complete action needed)
     - "agent": agent name (must be one from the available_agents list)

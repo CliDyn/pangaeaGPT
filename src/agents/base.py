@@ -4,7 +4,7 @@ import os
 import time
 import uuid
 import streamlit as st
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage  # Added SystemMessage import
 
 from ..utils import log_history_event
 from ..tools.package_tools import install_package_tool
@@ -36,6 +36,7 @@ def agent_node(state, agent, name):
     if 'agent_scratchpad' not in state or not isinstance(state['agent_scratchpad'], list):
         state['agent_scratchpad'] = []
 
+    # Keep original logic for backward compatibility, but we'll override it if there's a task
     user_messages = [msg for msg in state["messages"] if isinstance(msg, HumanMessage)]
     if user_messages:
         last_user_message = user_messages[-1].content
@@ -63,11 +64,35 @@ def agent_node(state, agent, name):
     thinking_id = str(uuid.uuid4())
     logging.info(f"Thinking... for {name}")
     
+    # MODIFICATION: Only filter messages if we have a task (normal supervisor flow)
+    # This preserves backward compatibility for any direct agent calls
+    if current_task:
+        # Filter messages to exclude direct user messages when operating under supervisor
+        filtered_messages = []
+        for msg in state.get('messages', []):
+            # Skip HumanMessage objects (direct user input)
+            if isinstance(msg, HumanMessage):
+                logging.debug(f"Filtering out HumanMessage from {name}'s message history")
+                continue
+            # Include AI messages from supervisor or other agents
+            if isinstance(msg, AIMessage):
+                filtered_messages.append(msg)
+            # Include system messages if any
+            if isinstance(msg, SystemMessage):
+                filtered_messages.append(msg)
+        
+        logging.info(f"Filtered messages for {name}: {len(filtered_messages)} messages (from original {len(state.get('messages', []))})")
+        messages_to_use = filtered_messages
+    else:
+        # If no task (edge case), use all messages for backward compatibility
+        messages_to_use = state.get('messages', [])
+        logging.info(f"No task found for {name}, using all {len(messages_to_use)} messages")
+    
     # Prepare the state for agent invocation
     # Remove any plot_path references that might be expected
     # Ensure we're only passing what the agent expects
     agent_state = {
-        'messages': state.get('messages', []),
+        'messages': messages_to_use,  # Use either filtered or all messages based on context
         'input': state.get('input', ''),
         'agent_scratchpad': state.get('agent_scratchpad', []),
         'plot_path': ''  # Empty string to satisfy template while transitioning to results_dir

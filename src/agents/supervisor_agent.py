@@ -92,7 +92,7 @@ For visualization and data analysis requests (like plotting, data manipulation, 
 - **OceanographerAgent**: Use for marine/ocean data visualization, climate analysis, physical oceanography, and when working with ERA5 or Copernicus Marine data. Specializes in temperature, salinity, currents, sea level data.
 - **EcologistAgent**: Use for biodiversity data visualization, species analysis, ecological patterns, and biological/environmental studies. Does NOT have access to ERA5/Copernicus Marine tools.
 - **VisualizationAgent**: Use for general plotting and visualization tasks that don't specifically fall into oceanography or ecology categories.
-- **DataFrameAgent**: Use for simple data analysis, filtering, manipulation, and statistical operations on tabular data.
+- **DataFrameAgent**: Use for simple data analysis, filtering, manipulation, and statistical operations ONLY on tabular data.
 
 ### Examples of Correct Routing
 - User asks: "Summarize our conversation" → Set "next" to "RESPOND"
@@ -226,6 +226,23 @@ For visualization and data analysis requests (like plotting, data manipulation, 
                 logging.error(f"Error creating plan: {str(e)}")
                 state["plan"] = []
         
+        # UPDATE: Check and update task statuses BEFORE making routing decision
+        last_agent_message = next((msg for msg in reversed(state["messages"]) 
+                                if hasattr(msg, "name") and msg.name in members), None)
+        if last_agent_message and state["plan"]:
+            agent_name = last_agent_message.name
+            for task in state["plan"]:
+                if task.get("agent") == agent_name and task.get("status") in ["pending", "in_progress"]:
+                    task["status"] = "completed"
+                    logging.info(f"Marked task '{task.get('task')}' as completed for {agent_name}")
+                    break
+
+        # Check if all tasks are done BEFORE routing
+        if state["plan"] and all(task.get("status") == "completed" for task in state["plan"]):
+            state["next"] = "FINISH"
+            logging.info("All tasks completed; setting next to FINISH")
+            return state
+        
         # Explicitly copy plan into a new variable for the chain
         plan_for_chain = state.get("plan", [])
         
@@ -290,23 +307,6 @@ For visualization and data analysis requests (like plotting, data manipulation, 
         # Handle special case for RESPOND option
         if next_step == "RESPOND":
             state["next"] = "RESPOND"
-            return state
-
-        # Update task statuses based on last agent message
-        last_agent_message = next((msg for msg in reversed(state["messages"]) 
-                                if hasattr(msg, "name") and msg.name in members), None)
-        if last_agent_message and state["plan"]:
-            agent_name = last_agent_message.name
-            for task in state["plan"]:
-                if task.get("agent") == agent_name and task.get("status") in ["pending", "in_progress"]:
-                    task["status"] = "completed"
-                    logging.info(f"Marked task '{task.get('task')}' as completed for {agent_name}")
-                    break
-
-        # Check if all tasks are done
-        if state["plan"] and all(task.get("status") == "completed" for task in state["plan"]):
-            state["next"] = "FINISH"
-            logging.info("All tasks completed; setting next to FINISH")
             return state
 
         # Set final routing decision

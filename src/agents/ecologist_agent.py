@@ -199,7 +199,7 @@ def create_ecologist_agent(user_query, datasets_info):
         prompt=ChatPromptTemplate.from_messages(
             [
                 ("system", prompt),
-                ("user", "{input}"),  # THIS LINE IS KEY - ensures task info is passed
+                ("user", "{input}"),  # THIS LINE IS KEY
                 MessagesPlaceholder(variable_name="messages"),
                 MessagesPlaceholder(variable_name="agent_scratchpad")
             ]

@@ -99,7 +99,12 @@ class Prompts:
         base_tools = (
             f"You have access to the following tools:\n"
             f"1. **get_example_of_visualizations**: 🌟 CALL THIS FIRST 🌟 - Call this tool with your task description to retrieve relevant example visualization code.\n"
-            f"2. **wise_agent**: 🌟 CALL THIS SECOND 🌟 - An important advisor that provides additional guidance and context.\n"
+            f"2. **wise_agent**: 🧠 EXPERT ADVISOR - Use this tool ONLY when:\n"
+                f"   - You encounter errors you cannot resolve after 2 attempts\n"
+                f"   - You face a particularly complex visualization challenge\n"
+                f"   - The reflect_on_image tool gives your plot a score below 6/10\n"
+                f"   - You need expert guidance on advanced visualization techniques\n"
+                f"   ⚠️ DO NOT use wise_agent for routine tasks or simple visualizations!\n"
             f"3. **Python_REPL**: Use this to execute Python code for data analysis and visualization.\n"
             f"   - **IMPORTANT**: The Python environment resets between calls. Use a SINGLE code block for multi-step operations.\n"
             f"4. **reflect_on_image**: Use this after generating a plot to get feedback and improve.\n"
@@ -120,10 +125,12 @@ class Prompts:
         """Common workflow section"""
         return (
             f"\n### Step-by-Step Workflow:\n"
-            f"1. FIRST call 'get_example_of_visualizations', SECOND call 'wise_agent'. COMBINE BOTH INPUTS.\n"
-            f"2. After generating the plot, use 'reflect_on_image' to get feedback.\n"
-            f"3. Save all plots to the results directory using descriptive filenames.\n"
-            f"4. Include the code and explanation in your final response.\n"
+                f"1. Start by calling 'get_example_of_visualizations' for relevant examples.\n"
+                f"2. Proceed with your visualization implementation.\n"
+                f"3. If you encounter errors or complex challenges, THEN call 'wise_agent' for expert help.\n"
+                f"4. After generating the plot, use 'reflect_on_image' to get feedback.\n"
+                f"5. Save all plots to the results directory using descriptive filenames.\n"
+                f"6. Include the code and explanation in your final response.\n"
             
             f"\n### PATH HANDLING INSTRUCTIONS:\n"
             f"- Use exactly the dataset path variables provided.\n"
@@ -156,11 +163,12 @@ class Prompts:
         return (
             f"\n### ⚠️ CRITICAL INSTRUCTIONS FOR reflect_on_image tool ⚠️\n"
             f"1. Unless you receive at least 7/10 score, DO NOT FINISH GENERATION.\n"
-            f"2. If score below 6/10, call wise_agent to revise your code.\n"
-            
-            f"\n### Error Handling:\n"
-            f"- Check for missing imports or mistyped variables.\n"
-            f"- Avoid reinstalling already installed packages.\n"
+            f"2. If score below 6/10, call wise_agent for expert guidance.\n"
+                f"\n### Error Handling:\n"
+                f"- First attempt: Check for missing imports or mistyped variables.\n"
+                f"- Second attempt: Try a different approach.\n"
+                f"- Third attempt: Call wise_agent for expert help.\n"
+                f"- Avoid reinstalling already installed packages.\n"
             
             f"\n### FINAL STEP:\n"
             f"Include complete code snippet and clear explanation in your final response.\n"
