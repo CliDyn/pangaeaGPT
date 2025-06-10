@@ -202,6 +202,28 @@ CUSTOM_UI = """
         background: var(--accent-red);
         color: var(--white);
     }
+    
+    /* Search Mode Toggle */
+    [data-testid="stRadio"] > div[role="radiogroup"] {
+        background-color: var(--primary-blue-light);
+        border-radius: 8px;
+        padding: 8px;
+        gap: 10px;
+    }
+    
+    [data-testid="stRadio"] > div[role="radiogroup"] > label {
+        background-color: var(--white);
+        border: 1px solid var(--primary-blue);
+        border-radius: 6px;
+        padding: 8px 16px;
+        transition: all 0.3s ease;
+    }
+    
+    [data-testid="stRadio"] > div[role="radiogroup"] > label:has(input:checked) {
+        background-color: var(--primary-blue);
+        color: var(--white);
+        box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+    }
 </style>
 """
 

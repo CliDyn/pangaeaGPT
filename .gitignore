@@ -1,6 +1,9 @@
 # Ignore virtual environments
 .venv/
 
+# Ingnore .claude
+.claude/
+
 # Ignore Python cache files
 __pycache__/
 *.py[cod]

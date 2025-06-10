@@ -53,20 +53,30 @@ def initialize_session_state(session_state: dict):
 
 
 def get_search_agent(datasets_info, model_name, api_key):
-    return create_search_agent(datasets_info=datasets_info)
+    # Add search_mode parameter
+    search_mode = st.session_state.get("search_mode", "simple")
+    return create_search_agent(datasets_info=datasets_info, search_mode=search_mode)
 
 
 def process_search_query(user_input: str, search_agent, session_data: dict):
+    """
+    Processes a user search query using the enhanced multi-search agent.
+    """
+    # Initialize or reset chat history
     session_data["chat_history"] = ChatMessageHistory(session_id="search-agent-session")
+    
+    # Populate chat history
     for message in session_data["messages_search"]:
         if message["role"] == "user":
             session_data["chat_history"].add_user_message(message["content"])
         elif message["role"] == "assistant":
             session_data["chat_history"].add_ai_message(message["content"])
 
+    # Create truncated history function
     def get_truncated_chat_history(session_id):
         truncated_messages = session_data["chat_history"].messages[-20:]
         truncated_history = ChatMessageHistory(session_id=session_id)
+        
         for msg in truncated_messages:
             if isinstance(msg, HumanMessage):
                 truncated_history.add_user_message(msg.content)
@@ -74,8 +84,10 @@ def process_search_query(user_input: str, search_agent, session_data: dict):
                 truncated_history.add_ai_message(msg.content)
             else:
                 truncated_history.add_message(msg)
+                
         return truncated_history
 
+    # Create agent with memory
     search_agent_with_memory = RunnableWithMessageHistory(
         search_agent,
         get_truncated_chat_history,
@@ -83,12 +95,39 @@ def process_search_query(user_input: str, search_agent, session_data: dict):
         history_messages_key="chat_history",
     )
 
+    # Log the search execution
+    logging.info(f"Starting multi-search process for query: {user_input}")
+    
+    # Invoke agent
     response = search_agent_with_memory.invoke(
         {"input": user_input},
         {"configurable": {"session_id": "search-agent-session"}},
     )
 
+    # Extract response and intermediate steps
     ai_message = response["output"]
+    intermediate_steps = response.get("intermediate_steps", [])
+    
+    # Log search statistics
+    search_count = sum(1 for step in intermediate_steps if step[0].tool == "search_pg_datasets")
+    logging.info(f"Completed multi-search with {search_count} searches executed")
+    
+    # Check if consolidation was performed
+    consolidation_performed = any(step[0].tool == "consolidate_search_results" for step in intermediate_steps)
+    
+    if consolidation_performed and session_data.get("datasets_info") is not None:
+        # Add the final consolidated table to messages
+        if session_data.get("search_mode") == "deep":
+            message = f"**Deep search completed:** Executed {search_count} search variations and consolidated results."
+        else:
+            message = f"**Search completed:** Found {len(session_data['datasets_info'])} datasets."
+            
+        session_data["messages_search"].append({
+            "role": "assistant",
+            "content": message,
+            "table": session_data["datasets_info"].to_json(orient="split")
+        })
+    
     return ai_message
 
 

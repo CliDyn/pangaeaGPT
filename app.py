@@ -7,7 +7,8 @@ import logging
 from io import StringIO           
 import pandas as pd
 import xarray as xr                
-import json                       
+import json
+import time                       
 import uuid
 import base64
 from pathlib import Path
@@ -104,6 +105,24 @@ with st.sidebar:
         value=initial_langsmith_project_name,
         key="langsmith_project_name"
     )
+    
+    # Search Mode Toggle in Sidebar
+    st.divider()
+    st.markdown("### Search Settings")
+    search_mode = st.radio(
+        "Search Mode",
+        options=["simple", "deep"],
+        format_func=lambda x: "🔍 Simple Search" if x == "simple" else "🔬 Deep Search (Multi-Search)",
+        key="search_mode_toggle",
+        help="Simple: Quick single search | Deep: Multiple search variations for comprehensive results"
+    )
+    st.session_state.search_mode = search_mode
+    
+    # Visual indicator of current mode
+    if st.session_state.search_mode == "deep":
+        st.info("🔬 **Deep Search Mode**: Will perform multiple search variations and consolidate results for better coverage")
+    else:
+        st.success("🔍 **Simple Search Mode**: Quick single search for fast results")
 
 # === Step 3: Update Environment Variables for LangSmith Keys ===
 langchain_api_key = st.session_state.get("langsmith_api_key") or ""
@@ -187,6 +206,10 @@ if "dataframe_agent_used" not in st.session_state:
 # === Step 7: Load Custom UI Styles (for example, CSS) ===
 st.markdown(CUSTOM_UI, unsafe_allow_html=True)
 
+# Add this new initialization for search mode
+if "search_mode" not in st.session_state:
+    st.session_state.search_mode = "simple"  # Default to simple search
+
 # === Step 8: Create the Search Agent (which now uses the updated keys) ===
 search_agent = get_search_agent(
     datasets_info=st.session_state.datasets_info,
@@ -199,6 +222,7 @@ search_agent = get_search_agent(
 # -------------------------
 if st.session_state.current_page == "search":
     st.markdown("## Dataset Explorer")
+    
     chat_placeholder = st.container()
     message_placeholder = st.empty()
     chat_input_container = st.container()
@@ -226,7 +250,7 @@ if st.session_state.current_page == "search":
     else:
         set_selected_text(st.session_state, st.session_state.get("selected_text", ""))
 
-    # Display chat messages (including any table with initial search results)
+# Display chat messages (including any table with initial search results)
     with chat_placeholder:
         print(f"DEBUG: USER_ICON type: {type(USER_ICON)}, value: {USER_ICON}")
         for i, message in enumerate(st.session_state.messages_search):
@@ -238,27 +262,77 @@ if st.session_state.current_page == "search":
                     st.markdown(message["content"])
             else:  # assistant messages
                 with st.chat_message(message["role"], avatar=SYSTEM_ICON):
-                    st.markdown(message["content"])
+                    # Skip displaying raw JSON arrays (debug output)
+                    content = message["content"]
+                    if content.strip().startswith("[") and content.strip().endswith("]"):
+                        # This looks like a raw JSON array, skip it or show in debug expander
+                        with st.expander("🐛 Debug output", expanded=False):
+                            st.code(content, language="json")
+                    elif "Direct access to DOIs:" in content:
+                        # Show DOI access in a compact expander
+                        with st.expander("📋 DOIs accessed", expanded=False):
+                            st.markdown(content)
+                    else:
+                        st.markdown(content)
+                    
+            # Handle tables differently based on whether it's the final consolidated result
             if "table" in message:
                 df = pd.read_json(StringIO(message["table"]), orient="split")
-                for index, row in df.iterrows():
-                    cols = st.columns([1, 2, 2, 4, 2, 1])
-                    cols[0].write(f"**#{row['Number']}**")
-                    cols[1].write(f"**Name:** {row['Name']}")
-                    cols[2].write(f"**DOI:** [{row['DOI']}]({row['DOI']})")
-                    with cols[3].expander("See full description"):
-                        st.write(row['Description'])
-                    parameters_list = row['Parameters'].split(", ")
-                    if len(parameters_list) > 7:
-                        parameters_list = parameters_list[:7] + ["..."]
-                    cols[4].write(f"**Parameters:** {', '.join(parameters_list)}")
-                    checkbox_key = f"select-{i}-{index}"
-                    with cols[5]:
-                        selected = st.checkbox("Select", key=checkbox_key)
-                    if selected:
-                        st.session_state.selected_datasets.add(row['DOI'])
-                    else:
-                        st.session_state.selected_datasets.discard(row['DOI'])
+                
+                # Check if this is the final consolidated result
+                content = message.get("content", "")
+                is_final_result = ("Search completed:" in content or 
+                                 "Deep search completed:" in content or
+                                 "search completed:" in content.lower())
+                
+                # For intermediate results, use an expander (collapsed by default)
+                if not is_final_result:
+                    # Extract info about this intermediate result
+                    expander_title = "🔍 Show intermediate search results"
+                    if "Datasets Information:" in message.get("content", ""):
+                        expander_title = f"🔍 Intermediate results ({len(df)} datasets found)"
+                    
+                    with st.expander(expander_title, expanded=False):
+                        for index, row in df.iterrows():
+                            cols = st.columns([1, 2, 2, 4, 2, 1])
+                            cols[0].write(f"**#{row['Number']}**")
+                            cols[1].write(f"**Name:** {row['Name']}")
+                            cols[2].write(f"**DOI:** [{row['DOI']}]({row['DOI']})")
+                            # For intermediate results, show description directly (no nested expander)
+                            with cols[3]:
+                                st.caption("Description:")
+                                st.text(row['Description'][:200] + "..." if len(row['Description']) > 200 else row['Description'])
+                            parameters_list = row['Parameters'].split(", ")
+                            if len(parameters_list) > 7:
+                                parameters_list = parameters_list[:7] + ["..."]
+                            cols[4].write(f"**Parameters:** {', '.join(parameters_list)}")
+                            checkbox_key = f"select-intermediate-{i}-{index}"
+                            with cols[5]:
+                                selected = st.checkbox("Select", key=checkbox_key)
+                            if selected:
+                                st.session_state.selected_datasets.add(row['DOI'])
+                            else:
+                                st.session_state.selected_datasets.discard(row['DOI'])
+                else:
+                    # For final results, display normally (visible by default)
+                    for index, row in df.iterrows():
+                        cols = st.columns([1, 2, 2, 4, 2, 1])
+                        cols[0].write(f"**#{row['Number']}**")
+                        cols[1].write(f"**Name:** {row['Name']}")
+                        cols[2].write(f"**DOI:** [{row['DOI']}]({row['DOI']})")
+                        with cols[3].expander("See full description"):
+                            st.write(row['Description'])
+                        parameters_list = row['Parameters'].split(", ")
+                        if len(parameters_list) > 7:
+                            parameters_list = parameters_list[:7] + ["..."]
+                        cols[4].write(f"**Parameters:** {', '.join(parameters_list)}")
+                        checkbox_key = f"select-final-{i}-{index}"
+                        with cols[5]:
+                            selected = st.checkbox("Select", key=checkbox_key)
+                        if selected:
+                            st.session_state.selected_datasets.add(row['DOI'])
+                        else:
+                            st.session_state.selected_datasets.discard(row['DOI'])
 
     # --- Single search input form ---
     with chat_input_container:
@@ -302,20 +376,55 @@ if st.session_state.current_page == "search":
                 "user_message", 
                 {"page": "search", "content": user_input}
             )
+            
+            # Create a container for search progress
             with message_placeholder:
-                st.info("Work in progress...")
-            ai_message = process_search_query(user_input, search_agent, st.session_state)
+                search_container = st.container()
+                with search_container:
+                    if st.session_state.search_mode == "deep":
+                        st.info("🔬 Initiating deep multi-search analysis...")
+                    else:
+                        st.info("🔍 Performing quick search...")
+                    
+                    # Create placeholder for search updates
+                    search_progress = st.empty()
+                    
+                    # Add a progress bar
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    # Update status periodically
+                    if st.session_state.search_mode == "deep":
+                        status_text.text("Analyzing query and planning search strategy...")
+                    else:
+                        status_text.text("Searching PANGAEA database...")
+                    progress_bar.progress(0.1)
+                    
+                    # Execute search
+                    ai_message = process_search_query(user_input, search_agent, st.session_state)
+                    
+                    # Complete progress
+                    progress_bar.progress(1.0)
+                    status_text.text("Search completed!")
+                    time.sleep(0.5)  # Brief pause to show completion
+                    
+                    # Clear progress indicators
+                    progress_bar.empty()
+                    status_text.empty()
+                    search_progress.empty()
+            
             st.session_state.messages_search.append({"role": "assistant", "content": ai_message})
             log_history_event(
                 st.session_state, 
                 "assistant_message", 
                 {"page": "search", "content": ai_message}
             )
-            # Save search tracking info for "Load More"
+            
+            # Update search tracking
             st.session_state.search_query = user_input
-            st.session_state.search_offset = 10  # initial load of 10
+            st.session_state.search_offset = 10
             if st.session_state.datasets_info is not None:
-                st.session_state.search_total = st.session_state.datasets_info.attrs.get('total', 0)
+                st.session_state.search_total = len(st.session_state.datasets_info)
             set_show_dataset(st.session_state, False)
             st.rerun()
 
