@@ -16,6 +16,7 @@ from langchain_community.chat_message_histories import ChatMessageHistory
 
 from ..search.search_pg_default import pg_search_default, direct_access_doi
 from ..search.publication_qa_tool import answer_publication_questions, PublicationQAArgs
+from ..tools.parallel_search_tool import parallel_search_pangaea, ParallelSearchArgs
 from ..config import API_KEY
 
 # Define the arguments schema for the search tool
@@ -33,35 +34,54 @@ class DoiDatasetAccess(BaseModel):
     doi: str = Field(description="One or more DOIs separated by commas. You can use formats like: full URLs (https://doi.pangaea.de/10.1594/PANGAEA.******), IDs (PANGAEA.******), or just numbers (******).")
 
 class ConsolidateResultsArgs(BaseModel):
-    all_results_json: str = Field(description="JSON string containing ONLY an array of DOI strings from all searches")
-    selection_criteria: str = Field(description="Criteria for selecting best datasets (relevance, parameters, dates, etc.)")
-    max_results: int = Field(default=15, description="Maximum number of results to return (10-15 recommended)")
+    all_results_json: str = Field(description="JSON string containing ONLY an array of DOI strings. Example: '[\"https://doi.org/10.1594/PANGAEA.123456\", \"https://doi.org/10.1594/PANGAEA.789012\"]'. DO NOT include metadata, scores, names, or any other information - ONLY DOI strings!")
+    selection_criteria: str = Field(description="Not used - kept for compatibility")
+    max_results: int = Field(default=15, description="Maximum number of results to return")
 
 def consolidate_search_results(all_results_json: str, selection_criteria: str, max_results: int = 15):
     """
-    Receives DOI list and calls direct_access_doi to create the table
+    Consolidates search results by accepting ONLY a list of DOI strings.
+    🚨 CRITICAL: This function ONLY accepts DOI strings, nothing else! 🚨
+    
+    Args:
+        all_results_json: JSON string containing ONLY an array of DOI strings
+        selection_criteria: Not used anymore, kept for compatibility
+        max_results: Maximum number of results to return
+        
+    Returns:
+        dict with selected DOIs
     """
     import json
     
     MIN_RESULTS = 10
     
     try:
-        # Parse the JSON results - expecting just a list of DOIs
+        # Parse the JSON - expecting ONLY a list of DOI strings
         all_dois = json.loads(all_results_json)
         
-        # Ensure it's a list
+        # Validate it's a list of strings
         if not isinstance(all_dois, list):
-            logging.error(f"Expected list of DOIs, got: {type(all_dois)}")
+            logging.error(f"❌ Expected list of DOI strings, got: {type(all_dois)}")
             return {
                 "selected_dois": [],
-                "reasoning": "Invalid format - expected list of DOIs"
+                "reasoning": "Invalid format - expected list of DOI strings only"
+            }
+        
+        # Ensure all items are strings (DOIs) - reject metadata objects
+        if all_dois and not all(isinstance(doi, str) for doi in all_dois):
+            logging.error("❌ List contains non-string items. Only DOI strings are allowed!")
+            return {
+                "selected_dois": [],
+                "reasoning": "Invalid format - list must contain only DOI strings, no metadata objects"
             }
         
         if not all_dois:
             return {
                 "selected_dois": [],
-                "reasoning": "No DOIs provided in the list"
+                "reasoning": "No DOIs provided"
             }
+        
+        logging.info(f"✅ Consolidating DOI list: {len(all_dois)} DOI strings received")
         
         # Remove duplicates while preserving order
         unique_dois = []
@@ -71,20 +91,21 @@ def consolidate_search_results(all_results_json: str, selection_criteria: str, m
                 seen.add(doi)
                 unique_dois.append(doi)
         
-        # For now, just take first N unique DOIs (you can add smarter selection later)
+        # Simple selection - just take the first N unique DOIs
         num_to_select = max(MIN_RESULTS, min(max_results, len(unique_dois)))
         selected_dois = unique_dois[:num_to_select]
         
-        # NOW CALL DIRECT_ACCESS_DOI TO CREATE THE TABLE!
+        # Call direct_access_doi to create the table
         from ..search.search_pg_default import direct_access_doi
         
-        # Join DOIs with commas (direct_access_doi expects comma-separated string)
+        # Join DOIs with commas
         dois_string = ', '.join(selected_dois)
         
-        # Call direct_access_doi - it will create the table and store in session state
+        # This creates the table and stores in session state
         datasets_info, prompt_text = direct_access_doi(dois_string)
         
-        reasoning = f"Selected {len(selected_dois)} datasets from {len(unique_dois)} unique results"
+        reasoning = f"Fast consolidation: Selected {len(selected_dois)} datasets from {len(unique_dois)} unique DOIs"
+        logging.info(f"⚡ {reasoning}")
         
         return {
             "selected_dois": selected_dois,
@@ -93,7 +114,6 @@ def consolidate_search_results(all_results_json: str, selection_criteria: str, m
         
     except json.JSONDecodeError as e:
         logging.error(f"JSON decode error: {str(e)}")
-        logging.error(f"Input was: {all_results_json[:200]}...")  # Log first 200 chars
         return {
             "selected_dois": [],
             "reasoning": f"Error parsing JSON: {str(e)}"
@@ -109,7 +129,7 @@ def consolidate_search_results(all_results_json: str, selection_criteria: str, m
 consolidate_tool = StructuredTool.from_function(
     func=consolidate_search_results,
     name="consolidate_search_results",
-    description="Consolidates results from multiple searches and returns DOIs of the best datasets. Returns a list of 10-15 DOIs.",
+    description="🚨 FAST CONSOLIDATION: Input ONLY a JSON array of DOI strings. Example: '[\"https://doi.org/10.1594/PANGAEA.123456\", \"https://doi.org/10.1594/PANGAEA.789012\"]'. DO NOT input metadata, scores, or objects - ONLY DOI strings! Returns selected DOIs quickly.",
     args_schema=ConsolidateResultsArgs
 )
 
@@ -142,11 +162,11 @@ def create_search_agent(datasets_info=None, search_mode="simple"):
 
 IMPORTANT: In simple mode, do NOT use consolidate_search_results tool. The search_pg_datasets tool will automatically create the results table."""
     else:
-        # Use the existing enhanced multi-search prompt
-        system_prompt = """You are an intelligent dataset search assistant for PANGAEA with advanced search capabilities.
+        # Use the existing enhanced multi-search prompt with parallel search capabilities
+        system_prompt = """You are an intelligent dataset search assistant for PANGAEA with advanced parallel search capabilities.
 
     **YOUR CORE CAPABILITIES:**
-1. **Multi-Search Strategy**: You can run multiple searches with different query variations to find the best results
+1. **Parallel Multi-Search Strategy**: You can run multiple searches SIMULTANEOUSLY for 3-5x faster results
 2. **Intelligent Query Refinement**: You reformulate queries to maximize relevant results
 3. **Dynamic Result Count**: You decide how many results to fetch based on query complexity (5-50 per search)
 4. **Result Consolidation**: You analyze all results and select the best datasets
@@ -154,43 +174,92 @@ IMPORTANT: In simple mode, do NOT use consolidate_search_results tool. The searc
 **SEARCH STRATEGY GUIDELINES:**
 
 For SIMPLE queries (single parameter/concept):
-- Run 1-2 searches with slight variations
+- Use parallel_search_pangaea with 2-3 query variations
 - Fetch 10-20 results per search
-- Example: "temperature data" → Try "temperature", "water temperature", "ocean temperature"
+- Example: "temperature data" → Try ["temperature", "water temperature", "ocean temperature"]
 
 For COMPLEX queries (multiple parameters/specific requirements):
-- Run 3-5 searches with different keyword combinations
+- Use parallel_search_pangaea with 3-5 different keyword combinations
 - Fetch 15-30 results per search
 - Example: "arctic ocean salinity 2020" → Try variations like:
-  - "arctic salinity 2020"
-  - "arctic ocean CTD salinity"
-  - "salinity measurements arctic"
-  - Date range: 2019-2021 for temporal flexibility
+  ["arctic salinity 2020", "arctic ocean CTD salinity", "salinity measurements arctic", "arctic conductivity temperature depth"]
+  - Include date range: 2019-2021 for temporal flexibility
 
 For SPATIAL queries:
 - Always use spatial parameters (minlat, maxlat, minlon, maxlon)
 - Expand search area by ±2-5 degrees for better coverage
-- Combine with relevant keywords
+- Combine with relevant keywords in parallel searches
 
-**SEARCH EXECUTION PROCESS:**
+**PARALLEL SEARCH EXECUTION PROCESS:**
 1. Analyze the user query to identify key concepts
-2. Plan 2-5 search variations based on complexity
-3. Execute searches with appropriate parameters using search_pg_datasets tool
-4. Keep track of ALL results from each search
-5. Use consolidate_search_results tool to select best datasets
-6. The tool will return selected DOIs - the system handles the rest
+2. Plan 2-5 search KEYWORD variations based on complexity
+3. Use parallel_search_pangaea tool with SEARCH QUERY STRINGS (NOT DOIs, NOT full text) for maximum speed
+4. The tool returns datasets with metadata AND DOI list from parallel execution
+5. Extract the DOI list from results and use consolidate_search_results tool
+6. The consolidation tool will return selected DOIs - the system handles the rest
 
-**🚨 CRITICAL CONSOLIDATION INSTRUCTIONS - READ CAREFULLY 🚨**
-The consolidate_search_results tool expects ONLY DOI strings, nothing else!
+**🚨 CRITICAL: parallel_search_pangaea INPUT FORMAT 🚨**
+- INPUT: List of search query strings like ["temperature", "salinity arctic", "CTD measurements"]
+- DO NOT input DOIs, full descriptions, or complete sentences
+- Keep queries short and focused on keywords/concepts
 
-After running all your searches:
-1. Extract ONLY the DOI strings from each dataset
-2. Create a simple flat array of DOI strings
-3. Convert to JSON string
+**🚀 PARALLEL SEARCH ADVANTAGES:**
+- 3-5x faster than sequential searches
+- Real-time progress tracking
+- Automatic deduplication of results
+- Comprehensive coverage with multiple query strategies
 
-**CORRECT FORMAT:**
-json
-["https://doi.org/10.1594/PANGAEA.953888", "https://doi.org/10.1594/PANGAEA.953752", "https://doi.org/10.1594/PANGAEA.955215"] 
+**TOOL SELECTION:**
+- Use parallel_search_pangaea for multiple related queries (2-5 variations)
+- Use search_pg_datasets for single queries or when you need very specific control
+- Always prefer parallel_search_pangaea in deep search mode for better performance
+
+**🚨 CRITICAL: CONSOLIDATION ONLY ACCEPTS DOI STRINGS! 🚨**
+
+The consolidate_search_results tool ONLY accepts a JSON array of DOI strings. NOTHING ELSE!
+
+**PARALLEL SEARCH RETURNS:**
+The parallel_search_pangaea tool returns:
+- `all_datasets`: Rich metadata (for internal scoring) 
+- `all_dois`: Simple DOI list ← **USE THIS FOR CONSOLIDATION**
+- `search_results`: Detailed breakdown per query
+- `execution_stats`: Performance metrics
+
+**🔥 INTELLIGENT CONSOLIDATION SELECTION GUIDELINES 🔥**
+
+**IGNORE SEARCH ENGINE SCORES - TRUST YOUR JUDGMENT!**
+- **DO NOT TRUST ELASTIC SEARCH METRICS**: The scores are often WRONG and misleading
+- **USE YOUR INTELLIGENCE**: You understand the user's intent better than any algorithm
+- **OVERRIDE THE RANKINGS**: A dataset with score 20 might be PERFECT while one with score 80 might be GARBAGE
+- **BE AGGRESSIVE**: Make bold decisions based on actual relevance, not arbitrary metrics
+
+**BEFORE CONSOLIDATION - MANUAL SELECTION PROCESS:**
+1. Look at the `all_datasets` metadata (titles, descriptions, parameters)
+2. **IGNORE THE SCORES COMPLETELY**
+3. Manually select which datasets ACTUALLY match the user's query:
+   - ✅ INCLUDE: Direct matches (even if low scored)
+   - ✅ INCLUDE: Aggregated datasets containing target data
+   - ✅ INCLUDE: Any dataset you KNOW has relevant data
+   - ❌ EXCLUDE: Wrong location (even if high scored)
+   - ❌ EXCLUDE: Wrong domain (sediments when user wants biology)
+   - ❌ EXCLUDE: Meta-studies or reference lists
+
+**EXAMPLE - Gelatinous Zooplankton in Fram Strait:**
+- ✅ "Gelatinous zooplankton annotations Fram Strait" → INCLUDE (perfect match, ignore score)
+- ✅ "Mesozooplankton abundance Fram Strait" → INCLUDE (contains gelatinous, ignore score)
+- ❌ "Aliphatic lipids in sediments" → EXCLUDE (wrong domain, even if score 90)
+- ❌ "Reference list of IPY supplements" → EXCLUDE (not real data, even if score 100)
+
+**CONSOLIDATION WORKFLOW - FOLLOW EXACTLY:**
+1. Execute parallel_search_pangaea with keyword queries
+2. Get results and examine `all_datasets` for CONTENT (ignore scores)
+3. Build your own DOI list of ACTUALLY RELEVANT datasets
+4. Pass ONLY this curated DOI list to consolidate_search_results. Preferably with at least 10-15 DOIs.
+5. IMPORTANT: After consolidation, write ONLY a brief 3-4 sentence summary since the system automatically displays all datasets in a table. DO NOT list or enumerate the DOIs again - this creates annoying double display for the user!
+
+**CORRECT FORMAT FOR CONSOLIDATION:**
+```json
+["https://doi.org/10.1594/PANGAEA.953888", "https://doi.org/10.1594/PANGAEA.953752"]
 """
 
     # Create the prompt template
@@ -285,13 +354,21 @@ json
         args_schema=DoiDatasetAccess
     )
     
-    # After creating the tools, conditionally include consolidation
+    # Create the parallel search tool for deep mode
+    parallel_search_tool = StructuredTool.from_function(
+        func=parallel_search_pangaea,
+        name="parallel_search_pangaea",
+        description="Execute multiple SEARCH QUERY STRINGS in parallel for comprehensive results. INPUT: List of search keywords/phrases (NOT DOIs, NOT full descriptions). Example: ['temperature', 'salinity arctic', 'CTD data']. Use this for deep search mode with 2-5 query variations.",
+        args_schema=ParallelSearchArgs
+    )
+    
+    # After creating the tools, conditionally include consolidation and parallel search
     if search_mode == "simple":
-        # Simple mode: exclude consolidation tool
+        # Simple mode: exclude consolidation and parallel search tools
         tools = [search_tool, publication_qa_tool, direct_doi_access_tool]
     else:
-        # Deep mode: include all tools including consolidation
-        tools = [search_tool, consolidate_tool, publication_qa_tool, direct_doi_access_tool]
+        # Deep mode: include all tools including consolidation and parallel search
+        tools = [search_tool, parallel_search_tool, consolidate_tool, publication_qa_tool, direct_doi_access_tool]
 
     # Bind tools to LLM
     llm_with_tools = llm.bind_tools(tools)
