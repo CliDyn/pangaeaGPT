@@ -91,14 +91,17 @@ For visualization and data analysis requests (like plotting, data manipulation, 
 {', '.join(members)}
 - **OceanographerAgent**: Use for marine/ocean data visualization, climate analysis, physical oceanography, and when working with ERA5 or Copernicus Marine data. Specializes in temperature, salinity, currents, sea level data.
 - **EcologistAgent**: Use for biodiversity data visualization, species analysis, ecological patterns, and biological/environmental studies. Does NOT have access to ERA5/Copernicus Marine tools.
-- **VisualizationAgent**: Use for general plotting and visualization tasks that don't specifically fall into oceanography or ecology categories.
-- **DataFrameAgent**: Use for simple data analysis, filtering, manipulation, and statistical operations ONLY on tabular data.
+- **VisualizationAgent**: Use for MAPPING tasks, geographic plots, sampling station maps, and general plotting/visualization tasks. ALWAYS route queries containing "map", "plot", "geographic", "station locations", "sampling stations" here.
+- **DataFrameAgent**: Use ONLY for data analysis, filtering, manipulation, and statistical operations on tabular data. DO NOT route visualization or plotting tasks here.
 
 ### Examples of Correct Routing
 - User asks: "Summarize our conversation" → Set "next" to "RESPOND"
 - "Plot ocean temperature data" → "OceanographerAgent"
 - "Analyze species distribution" → "EcologistAgent"
 - "Create a scatter plot" → "VisualizationAgent"
+- "Plot sampling station map" → "VisualizationAgent"
+- "Create a geographic map" → "VisualizationAgent"
+- "Map the sampling locations" → "VisualizationAgent"
 - User asks: "Analyze trends" → Set "next" to "DataFrameAgent"
 - All tasks completed → Set "next" to "FINISH"
 
@@ -149,8 +152,13 @@ For visualization and data analysis requests (like plotting, data manipulation, 
         ("system", "Based on the user query, conversation, and current plan, decide the next step.")
     ])
 
-    # Initialize the LLM
-    llm_supervisor = ChatOpenAI(api_key=API_KEY, model_name=st.session_state.get("model_name", "gpt-4o"))
+    # Initialize the LLM with CLI mode support
+    from ..config import IS_CLI_MODE
+    if IS_CLI_MODE:
+        model_name = "gpt-4.1"  # Default model for CLI
+    else:
+        model_name = st.session_state.get("model_name", "gpt-4.1")
+    llm_supervisor = ChatOpenAI(api_key=API_KEY, model_name=model_name)
 
     # Bind the planning tool to the LLM
     tools = [planning_tool]
@@ -191,7 +199,7 @@ For visualization and data analysis requests (like plotting, data manipulation, 
                                             for msg in state["messages"][-5:] if hasattr(msg, "content")])
             try:
                 # Get user query from the state
-                user_query = state.get("input", "")
+                user_query = state.get("user_query", "")
                 plan_result = planning_tool.invoke({
                     "user_query": user_query,
                     "conversation_history": conversation_history,
@@ -346,8 +354,12 @@ For visualization and data analysis requests (like plotting, data manipulation, 
         for line in stack_trace[:-1]:  # Exclude the current frame
             logging.info(line.strip())
         
-        # Get model name from session state
-        model_name = st.session_state.get("model_name", "gpt-4o")
+        # Get model name from session state or default for CLI
+        from ..config import IS_CLI_MODE
+        if IS_CLI_MODE:
+            model_name = "gpt-4.1"  # Default model for CLI
+        else:
+            model_name = st.session_state.get("model_name", "gpt-4.1")
         logging.info(f"Using model: {model_name}")
         
         # Debug session state keys
@@ -375,7 +387,11 @@ For visualization and data analysis requests (like plotting, data manipulation, 
         
         # Extract and validate all critical components
         
-        # 1. Extract visualization agent outputs and plot information
+        # 1. Get conversation history with validation FIRST (moved up to fix bug)
+        all_messages = state.get("messages", [])
+        logging.info(f"Total message count: {len(all_messages)}")
+        
+        # 2. Extract visualization agent outputs and plot information
         visualization_used = state.get("visualization_agent_used", False)
         plot_images = state.get("plot_images", [])
         logging.info(f"Visualization used: {visualization_used}, Plot images count: {len(plot_images)}")
@@ -390,10 +406,6 @@ For visualization and data analysis requests (like plotting, data manipulation, 
         
         # Log the final collected plot images
         logging.info(f"Total plot images after extraction: {len(plot_images)}, paths: {plot_images}")
-        
-        # 2. Get conversation history with validation
-        all_messages = state.get("messages", [])
-        logging.info(f"Total message count: {len(all_messages)}")
         
         # Debug message types
         message_types = {}
@@ -423,7 +435,7 @@ For visualization and data analysis requests (like plotting, data manipulation, 
             latest_user_query = user_messages[-1].content
             logging.info(f"Latest user query: '{latest_user_query[:50]}...'")
         else:
-            latest_user_query = state.get("input", "No query found")
+            latest_user_query = state.get("user_query", "No query found")
             logging.info(f"No user messages found, using state input: '{latest_user_query[:50]}...'")
         
         # Format datasets information with deep validation

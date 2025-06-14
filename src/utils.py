@@ -69,6 +69,65 @@ def get_last_python_repl_command():
         return None
 
 
+def make_json_serializable(obj):
+    """
+    Recursively convert any object to a JSON-serializable format.
+    Handles nested structures, pandas objects, numpy arrays, etc.
+    """
+    import pandas as pd
+    import numpy as np
+    from datetime import datetime, date
+    
+    # Handle None
+    if obj is None:
+        return None
+    
+    # Handle basic JSON-serializable types
+    if isinstance(obj, (str, int, float, bool)):
+        return obj
+    
+    # Handle datetime objects
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    
+    # Handle pandas Series
+    if isinstance(obj, pd.Series):
+        return obj.to_dict()
+    
+    # Handle pandas DataFrame
+    if isinstance(obj, pd.DataFrame):
+        return obj.to_dict(orient='records')
+    
+    # Handle numpy arrays and numpy scalars
+    if hasattr(obj, 'tolist'):
+        return obj.tolist()
+    if hasattr(obj, 'item'):
+        return obj.item()
+    
+    # Handle dictionaries recursively
+    if isinstance(obj, dict):
+        return {k: make_json_serializable(v) for k, v in obj.items()}
+    
+    # Handle lists and tuples recursively
+    if isinstance(obj, (list, tuple)):
+        return [make_json_serializable(item) for item in obj]
+    
+    # Handle sets
+    if isinstance(obj, set):
+        return list(obj)
+    
+    # For any other object, try to convert to dict or string
+    try:
+        # Try to get __dict__ attribute
+        if hasattr(obj, '__dict__'):
+            return make_json_serializable(obj.__dict__)
+    except:
+        pass
+    
+    # Last resort: convert to string
+    return str(obj)
+
+
 def log_history_event(session_data: dict, event_type: str, details: dict):
     if "execution_history" not in session_data:
         session_data["execution_history"] = []  # fallback
@@ -78,7 +137,19 @@ def log_history_event(session_data: dict, event_type: str, details: dict):
         "type": event_type,
         "timestamp": timestamp
     }
-    event.update(details)  # merges in content from details
+    
+    # Convert details to JSON-serializable format BEFORE adding to event
+    try:
+        serializable_details = make_json_serializable(details)
+        event.update(serializable_details)
+        logging.debug(f"Successfully serialized event details for type: {event_type}")
+    except Exception as e:
+        logging.error(f"Failed to serialize event details for type {event_type}: {e}")
+        # Fallback: store a simplified version
+        event.update({
+            "serialization_error": str(e),
+            "original_keys": list(details.keys()) if isinstance(details, dict) else "not_dict"
+        })
 
     session_data["execution_history"].append(event)
 

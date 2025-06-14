@@ -179,8 +179,13 @@ def create_oceanographer_agent(user_query, datasets_info):
     # Generate the prompt with the modified datasets_text
     prompt = Prompts.generate_oceanographer_agent_system_prompt(user_query, datasets_text, dataset_variables)
   
-    # Initialize the LLM
-    llm = ChatOpenAI(api_key=API_KEY, model_name=st.session_state.model_name)
+    # Initialize the LLM with CLI mode support
+    from ..config import IS_CLI_MODE
+    if IS_CLI_MODE:
+        model_name = "gpt-4.1"  # Default model for CLI
+    else:
+        model_name = st.session_state.model_name
+    llm = ChatOpenAI(api_key=API_KEY, model_name=model_name)
 
     # Create the CustomPythonREPLTool with sandbox paths
     repl_tool = CustomPythonREPLTool(datasets=datasets)

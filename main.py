@@ -162,6 +162,7 @@ def load_selected_datasets_into_cache(selected_datasets, session_data: dict):
             os.makedirs(target_dir, exist_ok=True)
             
             # Fetch dataset into the subdirectory
+            from src.search.dataset_utils import fetch_dataset
             dataset_path, name = fetch_dataset(doi, target_dir=target_dir)
             if dataset_path is not None:
                 session_data["datasets_cache"][doi] = (dataset_path, name)  # dataset_path is target_dir
@@ -327,15 +328,19 @@ def create_and_invoke_supervisor_agent(user_query: str, datasets_info: list, mem
         else:
             messages.append(AIMessage(content=message["content"], name=message["role"]))
 
-    limited_messages = messages[-15:]
+    # CRITICAL FIX: Add the current user query as a HumanMessage
+    # This ensures the supervisor sees the actual query and doesn't default to RESPOND
+    messages.append(HumanMessage(content=user_query, name="User"))
+    
+    limited_messages = messages[-15:]  # Keep last 15 messages including the new query
     initial_state = {
         "messages": limited_messages,
         "next": "supervisor",
         "agent_scratchpad": [],
-        "input": user_query,
+        "user_query": user_query,  # CRITICAL FIX: Use consistent 'user_query' key
         "plot_images": [],
         "last_agent_message": "",
-        "plan": []  # Added plan to initial state
+        "plan": []
     }
 
     config = {

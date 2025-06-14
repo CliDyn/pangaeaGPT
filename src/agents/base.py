@@ -37,12 +37,12 @@ def agent_node(state, agent, name):
         state['agent_scratchpad'] = []
 
     # Keep original logic for backward compatibility, but we'll override it if there's a task
+    # DON'T modify shared state - use local variables instead
     user_messages = [msg for msg in state["messages"] if isinstance(msg, HumanMessage)]
+    local_input = state.get('input', '')
     if user_messages:
         last_user_message = user_messages[-1].content
-        state['input'] = last_user_message
-    else:
-        state['input'] = state.get('input', '')
+        local_input = last_user_message
         
     # Find and include the task from the plan for this agent
     current_task = None
@@ -54,7 +54,7 @@ def agent_node(state, agent, name):
     if current_task:
         task_description = current_task.get('task', '')
         # Only use the task description without the original user query
-        state['input'] = f"TASK: {task_description}"
+        local_input = f"TASK: {task_description}"
         logging.info(f"Modified input for {name} to include ONLY task: {task_description}")
 
     if 'plot_images' not in state or not isinstance(state['plot_images'], list):
@@ -93,7 +93,7 @@ def agent_node(state, agent, name):
     # Ensure we're only passing what the agent expects
     agent_state = {
         'messages': messages_to_use,  # Use either filtered or all messages based on context
-        'input': state.get('input', ''),
+        'input': local_input,  # Use the local variable instead of modifying shared state
         'agent_scratchpad': state.get('agent_scratchpad', []),
         'plot_path': ''  # Empty string to satisfy template while transitioning to results_dir
     }

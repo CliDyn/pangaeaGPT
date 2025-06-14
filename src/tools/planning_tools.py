@@ -22,7 +22,12 @@ def planning_tool(user_query: str, conversation_history: str, available_agents: 
     A tool for creating or updating a plan based on user query and conversation.
     Returns a JSON string containing task steps with assigned agents and status.
     """
-    model_name = st.session_state.get("model_name", "gpt-4o")
+    # Check if we're in CLI mode
+    from ..config import IS_CLI_MODE
+    if IS_CLI_MODE:
+        model_name = "gpt-4.1"  # Default model for CLI
+    else:
+        model_name = st.session_state.get("model_name", "gpt-4.1")
     llm = ChatOpenAI(api_key=API_KEY, model_name=model_name)
     
     # Optimized system message to create simpler, more efficient plans
@@ -45,6 +50,10 @@ def planning_tool(user_query: str, conversation_history: str, available_agents: 
     - "Show the distribution of species" → ONE task for EcologistAgent
     - "Plot ocean temperature data" → ONE task for OceanographerAgent
     - "Create a scatter plot" → ONE task for VisualizationAgent
+    - "Plot sampling station map" → ONE task for VisualizationAgent
+    - "Create a geographic map" → ONE task for VisualizationAgent
+    - "Map the sampling locations" → ONE task for VisualizationAgent
+    - "Show station locations on a map" → ONE task for VisualizationAgent
     
     Examples of queries that should be SPLIT INTO MULTIPLE TASKS:
     - "Create an SDM (Species Distribution Model) map" → TWO tasks:
@@ -68,8 +77,8 @@ def planning_tool(user_query: str, conversation_history: str, available_agents: 
     AGENT SELECTION GUIDELINES:
     - OceanographerAgent: Use for marine/ocean data visualization, climate analysis, physical oceanography, temperature, salinity, currents, sea level data, and when working with ERA5 or Copernicus Marine data
     - EcologistAgent: Use for biodiversity data visualization, species analysis, ecological patterns, biological/environmental studies. Does NOT have access to ERA5/Copernicus Marine tools
-    - VisualizationAgent: Use for general plotting and visualization tasks that don't specifically fall into oceanography or ecology categories
-    - DataFrameAgent: Use for data analysis, filtering, counting, statistics, finding patterns, and basic operations on tabular data
+    - VisualizationAgent: Use for MAPPING tasks, geographic plots, sampling station maps, general plotting and visualization tasks that don't specifically fall into oceanography or ecology categories. ALWAYS use for queries containing: "map", "plot", "geographic", "station locations", "sampling stations"
+    - DataFrameAgent: Use ONLY for data analysis, filtering, counting, statistics, finding patterns, and basic operations on tabular data. DO NOT use for visualization or plotting tasks
     """
     
     # Set current_plan to empty array if it's not provided

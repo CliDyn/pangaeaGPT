@@ -20,11 +20,17 @@ def create_pandas_agent(user_query, datasets_info):
     Returns:
         AgentExecutor: The pandas agent executor
     """
-    # Initialize the language model
-    if st.session_state.model_name == "o3-mini":
-        llm = ChatOpenAI(api_key=API_KEY, model_name=st.session_state.model_name)
+    # Initialize the language model with CLI mode support
+    from ..config import IS_CLI_MODE
+    if IS_CLI_MODE:
+        model_name = "gpt-4.1"  # Default model for CLI
     else:
-        llm = ChatOpenAI(api_key=API_KEY, model_name=st.session_state.model_name)
+        model_name = st.session_state.model_name
+    
+    if model_name == "o3-mini":
+        llm = ChatOpenAI(api_key=API_KEY, model_name=model_name)
+    else:
+        llm = ChatOpenAI(api_key=API_KEY, model_name=model_name)
 
     # Assign unique variable names to each dataframe and collect dataframes
     dataset_variables = []
