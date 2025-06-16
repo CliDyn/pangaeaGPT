@@ -4,6 +4,7 @@ import uuid
 import json
 import functools
 import traceback
+import os
 from typing import List, TypedDict, Dict, Sequence
 import streamlit as st
 
@@ -51,12 +52,22 @@ def create_supervisor_agent(user_query, datasets_info, memory):
     datasets_text = ""
     if datasets_info:
         for i, info in enumerate(datasets_info, 1):
+            # Include file information for better routing decisions
+            file_info = ""
+            if 'files' in info and info['files']:
+                file_list = info['files'][:5]  # Show first 5 files
+                file_info = f"Files: {', '.join(file_list)}"
+                if len(info['files']) > 5:
+                    file_info += f" (and {len(info['files']) - 5} more)"
+                file_info += "\n"
+            
             datasets_text += (
                 f"Dataset {i}:\n"
                 f"Name: {info['name']}\n"
                 f"DOI: {info.get('doi', 'Not available')}\n"
                 f"Description: {info['description']}\n"
-                f"Type: {info['data_type']}\n\n"
+                f"Type: {info['data_type']}\n"
+                f"{file_info}\n"
             )
     else:
         datasets_text = "No datasets available."
@@ -73,39 +84,54 @@ Your ONLY options for the "next" field are:
 
 You must NEVER set "next" to "create_or_update_plan" or any other tool name!
 
+### DATA TYPE AWARE ROUTING - CRITICAL
+Before routing any task, examine the dataset information below to understand the data types:
+{datasets_text}
+
+**MANDATORY DATA TYPE ROUTING RULES:**
+- **NetCDF/xarray Datasets (.nc, .cdf, .netcdf files)**: NEVER route to DataFrameAgent. Use OceanographerAgent or VisualizationAgent.
+- **pandas DataFrames (.csv files, data.csv)**: Can be routed to any agent including DataFrameAgent.
+- **File folders with unknown formats**: Route to VisualizationAgent or domain-specific agents, NEVER to DataFrameAgent.
+- **Failed datasets**: Route to RESPOND to explain the issue.
+
 ### Direct Response Instructions
 For the following types of queries, respond directly using the 'RESPOND' option:
 - **Questions about conversation history**, such as 'what we discussed before,' 'summarize our conversation,' or 'remind me of previous topics.' Use the provided conversation history to answer accurately.
-- **Simple questions about datasets**, such as 'What's the description of the first dataset?', 'How many datasets are loaded?', or 'What are the parameters of dataset 2?' Use the dataset information below to answer directly:
-  {datasets_text}
+- **Simple questions about datasets**, such as 'What's the description of the first dataset?', 'How many datasets are loaded?', or 'What are the parameters of dataset 2?' Use the dataset information above to answer directly.
+- **Data type incompatibility issues**, when user requests operations that are incompatible with the loaded data types.
 
 When responding directly, provide a concise and accurate answer using the conversation history and dataset information, without involving other agents. Skip the planning phase to save time and improve efficiency.
 
 ### Complex Task Instructions
 For visualization and data analysis requests (like plotting, data manipulation, etc.):
-1. Review the current plan in the "plan" field
-2. Choose the appropriate agent from: {', '.join(members)}
-3. Set "next" ONLY to one of the agent names or "FINISH" or "RESPOND"
+1. **FIRST**: Check the data types in the dataset information above
+2. **SECOND**: Apply the mandatory data type routing rules
+3. Review the current plan in the "plan" field
+4. Choose the appropriate agent from: {', '.join(members)}
+5. Set "next" ONLY to one of the agent names or "FINISH" or "RESPOND"
 
 ### Available Agents and Their Capabilities
 {', '.join(members)}
-- **OceanographerAgent**: Use for marine/ocean data visualization, climate analysis, physical oceanography, and when working with ERA5 or Copernicus Marine data. Specializes in temperature, salinity, currents, sea level data.
-- **EcologistAgent**: Use for biodiversity data visualization, species analysis, ecological patterns, and biological/environmental studies. Does NOT have access to ERA5/Copernicus Marine tools.
-- **VisualizationAgent**: Use for MAPPING tasks, geographic plots, sampling station maps, and general plotting/visualization tasks. ALWAYS route queries containing "map", "plot", "geographic", "station locations", "sampling stations" here.
-- **DataFrameAgent**: Use ONLY for data analysis, filtering, manipulation, and statistical operations on tabular data. DO NOT route visualization or plotting tasks here.
+- **OceanographerAgent**: Use for marine/ocean data visualization, climate analysis, physical oceanography, and when working with ERA5 or Copernicus Marine data. Specializes in temperature, salinity, currents, sea level data. **CAN HANDLE NetCDF/xarray datasets**.
+- **EcologistAgent**: Use for biodiversity data visualization, species analysis, ecological patterns, and biological/environmental studies. Does NOT have access to ERA5/Copernicus Marine tools. **CAN HANDLE NetCDF/xarray datasets**.
+- **VisualizationAgent**: Use for MAPPING tasks, geographic plots, sampling station maps, and general plotting/visualization tasks. ALWAYS route queries containing "map", "plot", "geographic", "station locations", "sampling stations" here. **CAN HANDLE NetCDF/xarray datasets**.
+- **DataFrameAgent**: Use ONLY for data analysis, filtering, manipulation, and statistical operations on **TABULAR DATA (pandas DataFrames)**. **CANNOT HANDLE NetCDF/xarray datasets**. DO NOT route NetCDF files or visualization tasks here.
 
-### Examples of Correct Routing
+### Examples of Correct Data-Type Aware Routing
 - User asks: "Summarize our conversation" → Set "next" to "RESPOND"
-- "Plot ocean temperature data" → "OceanographerAgent"
-- "Analyze species distribution" → "EcologistAgent"
+- "Plot ocean temperature data" (NetCDF dataset) → "OceanographerAgent" (NOT DataFrameAgent)
+- "Analyze species distribution" (CSV dataset) → "EcologistAgent" or "DataFrameAgent"
 - "Create a scatter plot" → "VisualizationAgent"
 - "Plot sampling station map" → "VisualizationAgent"
-- "Create a geographic map" → "VisualizationAgent"
-- "Map the sampling locations" → "VisualizationAgent"
-- User asks: "Analyze trends" → Set "next" to "DataFrameAgent"
+- "Calculate statistics" (CSV dataset) → "DataFrameAgent"
+- "Calculate statistics" (NetCDF dataset) → "OceanographerAgent" or "VisualizationAgent" (NOT DataFrameAgent)
+- "Count records" (CSV dataset) → "DataFrameAgent"
+- "Count records" (NetCDF dataset) → "OceanographerAgent" (NOT DataFrameAgent)
 - All tasks completed → Set "next" to "FINISH"
 
 ### REMEMBER
+- **ALWAYS check data types before routing**
+- **NEVER route NetCDF/xarray datasets to DataFrameAgent**
 - Tools like 'create_or_update_plan' are NOT valid options for the "next" field!
 - The planning process happens automatically - your job is only to decide which agent should handle the task next.
 - Only use agent names that are actually available: {', '.join(members)}
@@ -438,7 +464,7 @@ For visualization and data analysis requests (like plotting, data manipulation, 
             latest_user_query = state.get("user_query", "No query found")
             logging.info(f"No user messages found, using state input: '{latest_user_query[:50]}...'")
         
-        # Format datasets information with deep validation
+        # Format datasets information with deep validation and file information
         datasets_text = ""
         if active_datasets_info:
             logging.info("Formatting datasets information...")
@@ -453,18 +479,28 @@ For visualization and data analysis requests (like plotting, data manipulation, 
                 # Get DOI with fallbacks and validation
                 doi = info.get('doi', 'Not available')
                 
-                # Build dataset text with explicit format
+                # Include file information for routing decisions
+                file_info = ""
+                if 'files' in info and info['files']:
+                    file_list = info['files'][:5]  # Show first 5 files
+                    file_info = f"Files: {', '.join(file_list)}"
+                    if len(info['files']) > 5:
+                        file_info += f" (and {len(info['files']) - 5} more)"
+                    file_info += "\n"
+                
+                # Build dataset text with explicit format including file info
                 current_dataset = (
                     f"Dataset {i}:\n"
                     f"Name: {info.get('name', 'Unknown')}\n"
                     f"DOI: {doi}\n"
                     f"Description: {info.get('description', 'No description available')}\n"
                     f"Type: {info.get('data_type', 'Unknown type')}\n"
+                    f"{file_info}"
                 )
                 datasets_text += current_dataset
                 
-                # Log what we're adding
-                logging.info(f"Added dataset {i}: {info.get('name', 'Unknown')}")
+                # Log what we're adding with data type info
+                logging.info(f"Added dataset {i}: {info.get('name', 'Unknown')} (Type: {info.get('data_type', 'Unknown type')})")
         else:
             datasets_text = "No active dataset selected."
             logging.warning("No active datasets found - using empty placeholder")
@@ -506,12 +542,19 @@ For visualization and data analysis requests (like plotting, data manipulation, 
         
         # Construct system message with debugging
         try:
-            # Create a direct substitution in the system message (not using f-string with placeholders)
+            # Create a direct substitution in the system message with data type awareness
             system_message = f"""You are a supervisor capable of answering simple questions directly. If the user's query is basic (e.g., about available analysis), answer using the selected dataset context below:
 
 {datasets_text}
 
 {agent_info}
+
+**IMPORTANT DATA TYPE CONTEXT:**
+When providing responses about data analysis capabilities, always consider the data types shown above:
+- NetCDF/xarray datasets require specialized tools and cannot be processed by standard DataFrame operations
+- pandas DataFrames can be processed with standard tabular data operations
+- File folders may contain various formats requiring different approaches
+
 Always address the latest user query directly, even if it is similar to previous queries. You can acknowledge repetition (e.g., 'As I mentioned earlier...') and reference previous answers if relevant, but ensure each query receives a clear and complete response. For complex queries, follow these agent guidelines:
 
 Format any code in markdown and keep responses concise.
@@ -520,7 +563,7 @@ The last agent that processed this request said: {last_agent_message}
 
 Latest user query: {latest_user_query}
 
-Please provide a response to the latest user query, taking into account the conversation history."""
+Please provide a response to the latest user query, taking into account the conversation history and data type constraints."""
             
             logging.info(f"System message constructed successfully, length: {len(system_message)}")
             

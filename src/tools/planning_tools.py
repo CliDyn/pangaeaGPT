@@ -30,10 +30,10 @@ def planning_tool(user_query: str, conversation_history: str, available_agents: 
         model_name = st.session_state.get("model_name", "gpt-4.1")
     llm = ChatOpenAI(api_key=API_KEY, model_name=model_name)
     
-    # Optimized system message to create simpler, more efficient plans
+    # Optimized system message to create simpler, more efficient plans with data type awareness
     system_message = """
     You are a Planning Tool that creates MINIMAL, EFFICIENT task plans for data analysis workflows.
-    Based on the user query, conversation history, and available agents, create a plan with these components:
+    Based on the user query, conversation history, available agents, and dataset information, create a plan with these components:
     1. A list of tasks needed to address the user query
     2. Assignment of each task to the appropriate agent type
     3. Status tracking (pending, in_progress, completed, failed)
@@ -43,10 +43,20 @@ def planning_tool(user_query: str, conversation_history: str, available_agents: 
     - AVOID TASK SPLITTING: For simple queries that can be solved in one step, create JUST ONE task
     - DIRECT IMPLEMENTATION: For basic operations like counting, finding maximums, or calculating statistics, use a SINGLE task
     
-    Examples of queries that should be ONE TASK:
-    - "What is the most common species?" → ONE task for DataFrameAgent
-    - "Calculate the average temperature" → ONE task for DataFrameAgent
-    - "Count how many records are in the dataset" → ONE task for DataFrameAgent
+    **MANDATORY DATA TYPE ROUTING RULES:**
+    YOU MUST examine the datasets info provided and apply these rules:
+    - **NetCDF/xarray Datasets (.nc, .cdf, .netcdf files)**: NEVER assign to DataFrameAgent. Use OceanographerAgent, EcologistAgent, or VisualizationAgent.
+    - **pandas DataFrames (.csv files, data.csv)**: Can be assigned to any agent including DataFrameAgent.
+    - **File folders with unknown formats**: Assign to VisualizationAgent or domain-specific agents, NEVER to DataFrameAgent.
+    - **Failed datasets**: Do not create tasks, the supervisor should respond directly about the issue.
+    
+    Examples of queries that should be ONE TASK (DATA TYPE AWARE):
+    - "What is the most common species?" → ONE task for DataFrameAgent (ONLY if CSV/DataFrame data)
+    - "What is the most common species?" → ONE task for EcologistAgent (if NetCDF/xarray data)
+    - "Calculate the average temperature" → ONE task for DataFrameAgent (ONLY if CSV/DataFrame data)
+    - "Calculate the average temperature" → ONE task for OceanographerAgent (if NetCDF/xarray data)
+    - "Count how many records are in the dataset" → ONE task for DataFrameAgent (ONLY if CSV/DataFrame data)
+    - "Count how many records are in the dataset" → ONE task for OceanographerAgent (if NetCDF/xarray data)
     - "Show the distribution of species" → ONE task for EcologistAgent
     - "Plot ocean temperature data" → ONE task for OceanographerAgent
     - "Create a scatter plot" → ONE task for VisualizationAgent
@@ -62,11 +72,11 @@ def planning_tool(user_query: str, conversation_history: str, available_agents: 
 
     - "Perform advanced oceanographic statistical analysis with climate indices" → TWO tasks:
     Task 1: OceanographerAgent - "Download ERA5 atmospheric and Copernicus ocean data, calculate climate indices (NAO, AMO, PDO)"
-    Task 2: DataFrameAgent - "Perform wavelet coherence analysis and cross-correlation with scipy.signal to identify teleconnections"
+    Task 2: OceanographerAgent - "Perform wavelet coherence analysis and cross-correlation with scipy.signal to identify teleconnections" (NOTE: Changed from DataFrameAgent to OceanographerAgent for NetCDF data)
 
     SPLIT TASK RULES:
     - Data retrieval (ERA5/Copernicus) → OceanographerAgent first
-    - Complex analysis requiring the data → Appropriate specialist agent second
+    - Complex analysis requiring the data → Appropriate specialist agent second (consider data type!)
     - Each task should be self-contained with clear outputs for the next task
 
     FORMAT YOUR RESPONSE AS A VALID JSON ARRAY where each item has:
@@ -74,11 +84,11 @@ def planning_tool(user_query: str, conversation_history: str, available_agents: 
     - "agent": agent name (must be one from the available_agents list)
     - "status": "pending" (for new tasks), "in_progress", "completed", or "failed"
     
-    AGENT SELECTION GUIDELINES:
-    - OceanographerAgent: Use for marine/ocean data visualization, climate analysis, physical oceanography, temperature, salinity, currents, sea level data, and when working with ERA5 or Copernicus Marine data
-    - EcologistAgent: Use for biodiversity data visualization, species analysis, ecological patterns, biological/environmental studies. Does NOT have access to ERA5/Copernicus Marine tools
-    - VisualizationAgent: Use for MAPPING tasks, geographic plots, sampling station maps, general plotting and visualization tasks that don't specifically fall into oceanography or ecology categories. ALWAYS use for queries containing: "map", "plot", "geographic", "station locations", "sampling stations"
-    - DataFrameAgent: Use ONLY for data analysis, filtering, counting, statistics, finding patterns, and basic operations on tabular data. DO NOT use for visualization or plotting tasks
+    AGENT SELECTION GUIDELINES (DATA TYPE AWARE):
+    - OceanographerAgent: Use for marine/ocean data visualization, climate analysis, physical oceanography, temperature, salinity, currents, sea level data, and when working with ERA5 or Copernicus Marine data. **CAN HANDLE NetCDF/xarray datasets**.
+    - EcologistAgent: Use for biodiversity data visualization, species analysis, ecological patterns, biological/environmental studies. Does NOT have access to ERA5/Copernicus Marine tools. **CAN HANDLE NetCDF/xarray datasets**.
+    - VisualizationAgent: Use for MAPPING tasks, geographic plots, sampling station maps, general plotting and visualization tasks that don't specifically fall into oceanography or ecology categories. ALWAYS use for queries containing: "map", "plot", "geographic", "station locations", "sampling stations". **CAN HANDLE NetCDF/xarray datasets**.
+    - DataFrameAgent: Use ONLY for data analysis, filtering, counting, statistics, finding patterns, and basic operations on **TABULAR DATA (pandas DataFrames)**. **CANNOT HANDLE NetCDF/xarray datasets**. DO NOT assign NetCDF files or visualization tasks here.
     """
     
     # Set current_plan to empty array if it's not provided
@@ -96,8 +106,16 @@ def planning_tool(user_query: str, conversation_history: str, available_agents: 
     
     CONVERSATION HISTORY: {conversation_history}
     
+    **CRITICAL**: Before creating any plan, examine the DATASETS INFO above to identify data types:
+    - Look for "Type:" field in each dataset
+    - Check for file extensions (.nc, .cdf, .netcdf indicate NetCDF/xarray)
+    - Apply the mandatory data type routing rules
+    
     Create a MINIMAL EFFICIENT plan that addresses the user's query using the available agents.
-    For simple analysis like finding frequency, counting occurrences, or basic statistics, use JUST ONE TASK with the specific action.
+    For simple analysis like finding frequency, counting occurrences, or basic statistics:
+    - Use DataFrameAgent ONLY if the data type is "pandas DataFrame" or contains CSV files
+    - Use OceanographerAgent/EcologistAgent/VisualizationAgent if the data type is "xarray Dataset" or contains NetCDF files
+    
     Return only the JSON array with no additional text.
     """
     
