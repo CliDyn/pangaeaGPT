@@ -95,7 +95,8 @@ def agent_node(state, agent, name):
         'messages': messages_to_use,  # Use either filtered or all messages based on context
         'input': local_input,  # Use the local variable instead of modifying shared state
         'agent_scratchpad': state.get('agent_scratchpad', []),
-        'plot_path': ''  # Empty string to satisfy template while transitioning to results_dir
+        'plot_path': '',  # Empty string to satisfy template while transitioning to results_dir
+        'file': ''
     }
     
     # Add any additional state items

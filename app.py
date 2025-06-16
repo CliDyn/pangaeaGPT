@@ -369,13 +369,6 @@ if st.session_state.current_page == "search":
             submit_button = st.form_submit_button(label='Send')
         if submit_button and user_input:
             st.session_state.selected_text = ""
-            st.session_state.messages_search.append({"role": "user", "content": user_input})
-            logging.debug("User input: %s", user_input)
-            log_history_event(
-                st.session_state, 
-                "user_message", 
-                {"page": "search", "content": user_input}
-            )
             
             # Create a container for search progress
             with message_placeholder:
@@ -413,7 +406,7 @@ if st.session_state.current_page == "search":
                     if st.session_state.search_mode == "deep":
                         st.session_state.processing = True
                     
-                    # Execute search
+                    # Execute search BEFORE adding the user message to the history
                     ai_message = process_search_query(user_input, search_agent, st.session_state)
                     
                     # Stop processing flag
@@ -450,12 +443,13 @@ if st.session_state.current_page == "search":
                     if parallel_status:
                         parallel_status.empty()
             
+            # NOW add both the user message and the AI message for UI display
+            st.session_state.messages_search.append({"role": "user", "content": user_input})
             st.session_state.messages_search.append({"role": "assistant", "content": ai_message})
-            log_history_event(
-                st.session_state, 
-                "assistant_message", 
-                {"page": "search", "content": ai_message}
-            )
+            
+            # Log the events
+            log_history_event(st.session_state, "user_message", {"page": "search", "content": user_input})
+            log_history_event(st.session_state, "assistant_message", {"page": "search", "content": ai_message})
             
             # Update search tracking
             st.session_state.search_query = user_input
@@ -489,6 +483,20 @@ if st.session_state.current_page == "search":
     if len(st.session_state.selected_datasets) > 0:
         with button_placeholder:
             if st.button('Send Selected Datasets to Data Agent', key='send_datasets_button'):
+                # 1. Force the creation of a new session ID to create a new, clean sandbox.
+                ensure_thread_id(st.session_state, force_new=True)
+                logging.info(f"New Data Agent session started. Sandbox/Thread ID: {st.session_state['thread_id']}")
+                
+                # 2. Clear state from any previous analysis to ensure a clean start.
+                st.session_state.messages_data_agent = []
+                st.session_state.intermediate_steps = []
+                st.session_state.execution_history = []
+                st.session_state.oceanographer_agent_used = False
+                st.session_state.ecologist_agent_used = False
+                st.session_state.visualization_agent_used = False
+                st.session_state.dataframe_agent_used = False
+
+                # 3. Load datasets into the newly defined sandbox.
                 load_selected_datasets_into_cache(st.session_state.selected_datasets, st.session_state)
                 set_active_datasets_from_selection(st.session_state)
                 set_current_page(st.session_state, "data_agent")

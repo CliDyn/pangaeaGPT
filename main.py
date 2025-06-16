@@ -148,17 +148,25 @@ def load_selected_datasets_into_cache(selected_datasets, session_data: dict):
         session_data: Dictionary containing session state.
     """
     logging.info(f"Starting load_selected_datasets_into_cache for {len(selected_datasets)} datasets")
-    
-    # Create one main sandbox directory
-    sandbox_main = os.path.join("tmp", "sandbox", str(uuid.uuid4()))
+
+    # Get the persistent thread_id for the session. It must have been created before this.
+    thread_id = session_data.get("thread_id")
+    if not thread_id:
+        logging.error("CRITICAL: thread_id not found. Forcing creation of a new one.")
+        ensure_thread_id(session_data, force_new=True)
+        thread_id = session_data["thread_id"]
+
+    # Define the main sandbox directory using the persistent thread_id
+    sandbox_main = os.path.join("tmp", "sandbox", thread_id)
     os.makedirs(sandbox_main, exist_ok=True)
-    logging.info(f"Created main sandbox directory: {sandbox_main}")
+    logging.info(f"Using persistent main sandbox for session {thread_id}: {sandbox_main}")
 
     for i, doi in enumerate(selected_datasets, 1):
         logging.info(f"Processing DOI: {doi}")
         if doi not in session_data["datasets_cache"]:
-            # Create a subdirectory for this dataset
-            target_dir = os.path.join(sandbox_main, f"dataset_{i}")
+            # Create a more descriptive subdirectory for this dataset
+            sanitized_doi = doi.replace('/', '_').replace(':', '_')
+            target_dir = os.path.join(sandbox_main, f"dataset_{i}_{sanitized_doi}")
             os.makedirs(target_dir, exist_ok=True)
             
             # Fetch dataset into the subdirectory
@@ -328,9 +336,9 @@ def create_and_invoke_supervisor_agent(user_query: str, datasets_info: list, mem
         else:
             messages.append(AIMessage(content=message["content"], name=message["role"]))
 
-    # CRITICAL FIX: Add the current user query as a HumanMessage
-    # This ensures the supervisor sees the actual query and doesn't default to RESPOND
-    messages.append(HumanMessage(content=user_query, name="User"))
+    # The user's query is already in the messages list from the session state.
+    # The line below was adding it a second time, causing duplication. It has been removed.
+    # messages.append(HumanMessage(content=user_query, name="User"))
     
     limited_messages = messages[-15:]  # Keep last 15 messages including the new query
     initial_state = {
@@ -433,6 +441,8 @@ def ensure_memory(session_data: dict):
         session_data["memory"] = CustomMemorySaver()
 
 
-def ensure_thread_id(session_data: dict):
-    if "thread_id" not in session_data:
+def ensure_thread_id(session_data: dict, force_new: bool = False):
+    """Ensures a thread_id exists for the session. Can force creation of a new one."""
+    if force_new or "thread_id" not in session_data or session_data["thread_id"] is None:
         session_data["thread_id"] = str(uuid.uuid4())
+        logging.info(f"Generated new thread_id: {session_data['thread_id']} (forced: {force_new})")

@@ -131,21 +131,17 @@ def retrieve_era5_data(
         logging.info(f"ERA5 retrieval: var={variable_id}, time={start_date}→{end_date}, lat=[{min_latitude},{max_latitude}], lon=[{min_longitude},{max_longitude}], level={pressure_level}")
 
         main_dir = None
-        if "streamlit" in sys.modules and hasattr(st, 'session_state') and \
-           st.session_state and "active_datasets" in st.session_state and st.session_state.get("active_datasets"):
-            try:
-                doi = next(iter(st.session_state["active_datasets"]))
-                cached = st.session_state["datasets_cache"].get(doi)
-                if cached:
-                    path = cached[0]
-                    if isinstance(path, str) and os.path.isdir(path):
-                        main_dir = os.path.dirname(os.path.abspath(path))
-            except Exception as e_st:
-                logging.warning(f"Could not determine main_dir from Streamlit session: {e_st}")
-
+        if "streamlit" in sys.modules and hasattr(st, 'session_state') and st.session_state:
+            # Prioritize getting the sandbox path from the session's thread_id
+            thread_id = st.session_state.get("thread_id")
+            if thread_id:
+                main_dir = os.path.join("tmp", "sandbox", thread_id)
+                logging.info(f"Found session thread_id. Using persistent sandbox: {main_dir}")
+        
         if not main_dir:
+            # This now only runs if no thread_id is found (e.g., during isolated testing)
             main_dir = os.path.join("tmp", "sandbox", uuid.uuid4().hex)
-            logging.info(f"No active PANGAEA sandbox or not in Streamlit context. Created new general sandbox: {main_dir}")
+            logging.warning(f"No active session found. Created new temporary sandbox: {main_dir}")
         os.makedirs(main_dir, exist_ok=True)
         era5_specific_dir = os.path.join(main_dir, "era5_data")
         os.makedirs(era5_specific_dir, exist_ok=True)
