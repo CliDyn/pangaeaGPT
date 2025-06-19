@@ -8,7 +8,6 @@ import os
 from typing import List, TypedDict, Dict, Sequence
 import streamlit as st
 
-from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from langchain_core.output_parsers.openai_functions import JsonOutputFunctionsParser
@@ -16,8 +15,9 @@ from langgraph.graph import StateGraph, END
 
 from .base import agent_node
 from .visualization_agent import initialize_agents
+from .writer_agent import create_writer_agent
 from ..tools.planning_tools import planning_tool
-from ..config import API_KEY
+from ..llm_factory import get_llm  # Use the new factory
 
 def create_supervisor_agent(user_query, datasets_info, memory):
     """
@@ -33,10 +33,10 @@ def create_supervisor_agent(user_query, datasets_info, memory):
     """
     # Initialize agents
     oceanographer_agent, ecologist_agent, visualization_agent, dataframe_agent = initialize_agents(user_query, datasets_info)
-    logging.info("Initialized all 4 agents for workflow")
+    writer_agent = create_writer_agent(datasets_info)
+    logging.info("Initialized all agents, including WriterAgent")
 
-
-    #members list building:
+    # members list building:
     members = []
     if oceanographer_agent:
         members.append("OceanographerAgent")
@@ -46,7 +46,12 @@ def create_supervisor_agent(user_query, datasets_info, memory):
         members.append("VisualizationAgent")
     if dataframe_agent:
         members.append("DataFrameAgent")
-    logging.info(f"Supervisor managing 4 agent types: {members}")
+    
+    # Add the WriterAgent to the list of members the supervisor knows about.
+    if writer_agent:
+        members.append("WriterAgent")
+
+    logging.info(f"Supervisor managing agent types: {members}")
 
     # Format dataset information for both planning and direct responses
     datasets_text = ""
@@ -178,13 +183,8 @@ For visualization and data analysis requests (like plotting, data manipulation, 
         ("system", "Based on the user query, conversation, and current plan, decide the next step.")
     ])
 
-    # Initialize the LLM with CLI mode support
-    from ..config import IS_CLI_MODE
-    if IS_CLI_MODE:
-        model_name = "gpt-4.1"  # Default model for CLI
-    else:
-        model_name = st.session_state.get("model_name", "gpt-4.1")
-    llm_supervisor = ChatOpenAI(api_key=API_KEY, model_name=model_name)
+    # Initialize the LLM using the factory. Supervisor should be deterministic.
+    llm_supervisor = get_llm(temperature=0.0)
 
     # Bind the planning tool to the LLM
     tools = [planning_tool]
@@ -209,154 +209,67 @@ For visualization and data analysis requests (like plotting, data manipulation, 
 
     # Define the supervisor node function
     def supervisor_with_planning(state):
-        # Safety net for infinite loops
+        # Safety net for infinite loops, just in case
         if "iteration_count" not in state:
             state["iteration_count"] = 0
         state["iteration_count"] += 1
         if state["iteration_count"] > 10:
+            logging.error("Max iterations reached. Forcing FINISH.")
             state["next"] = "FINISH"
-            state["messages"].append(AIMessage(content="Max iterations reached. Stopping.", name="Supervisor"))
+            state["messages"].append(AIMessage(content="Error: Maximum workflow iterations reached. Aborting.", name="Supervisor"))
             return state
 
-        # First create/update the plan
-        if not state.get("plan") or len(state.get("plan", [])) == 0:
-            # Create a plan first before making routing decisions
+        # Mark the last agent's task as completed
+        last_message = state["messages"][-1]
+        if hasattr(last_message, 'name') and last_message.name in members:
+            agent_name = last_message.name
+            for task in state.get("plan", []):
+                # Find the task that was just in progress by this agent
+                if task.get("agent") == agent_name and task.get("status") == "in_progress":
+                    task["status"] = "completed"
+                    logging.info(f"Marked task '{task.get('task')}' as 'completed' for agent {agent_name}.")
+                    break
+        
+        # Create the plan if it doesn't exist
+        if not state.get("plan"):
             conversation_history = "\n".join([f"{msg.name if hasattr(msg, 'name') else 'User'}: {msg.content}" 
                                             for msg in state["messages"][-5:] if hasattr(msg, "content")])
             try:
-                # Get user query from the state
-                user_query = state.get("user_query", "")
-                plan_result = planning_tool.invoke({
+                user_query = state.get("user_query", state['messages'][-1].content)
+                plan_result_str = planning_tool.invoke({
                     "user_query": user_query,
                     "conversation_history": conversation_history,
                     "available_agents": members,
-                    "current_plan": json.dumps([]),
+                    "current_plan": "[]",
                     "datasets_info": datasets_text
                 })
-                
-                # Improved plan extraction and validation
-                if isinstance(plan_result, str):
-                    try:
-                        # Try direct JSON parsing
-                        plan = json.loads(plan_result)
-                    except json.JSONDecodeError:
-                        # Try extracting JSON from structured response
-                        import re
-                        json_match = re.search(r'(\[.*\])', plan_result, re.DOTALL)
-                        if json_match:
-                            extracted_json = json_match.group(1)
-                            logging.info(f"Extracted JSON from string: {extracted_json}")
-                            plan = json.loads(extracted_json)
-                        else:
-                            plan = []
-                else:
-                    # If already a Python object, use directly
-                    plan = plan_result
-                    
-                # Ensure plan is stored properly
-                state["plan"] = plan
-                logging.info(f"Successfully created initial plan: {json.dumps(plan)}")
+                state["plan"] = json.loads(plan_result_str)
+                logging.info(f"Successfully created initial plan: {json.dumps(state['plan'])}")
             except Exception as e:
-                logging.error(f"Error creating plan: {str(e)}")
-                state["plan"] = []
+                logging.error(f"Error creating plan: {e}", exc_info=True)
+                state["messages"].append(AIMessage(content=f"Error: Could not create a valid execution plan. {e}", name="Supervisor"))
+                state["next"] = "FINISH"
+                return state
         
-        # UPDATE: Check and update task statuses BEFORE making routing decision
-        last_agent_message = next((msg for msg in reversed(state["messages"]) 
-                                if hasattr(msg, "name") and msg.name in members), None)
-        if last_agent_message and state["plan"]:
-            agent_name = last_agent_message.name
-            for task in state["plan"]:
-                if task.get("agent") == agent_name and task.get("status") in ["pending", "in_progress"]:
-                    task["status"] = "completed"
-                    logging.info(f"Marked task '{task.get('task')}' as completed for {agent_name}")
-                    break
-
-        # Check if all tasks are done BEFORE routing
-        if state["plan"] and all(task.get("status") == "completed" for task in state["plan"]):
+        # Find the next pending task in the plan
+        next_task = None
+        for task in state.get("plan", []):
+            if task.get("status") == "pending":
+                next_task = task
+                break
+        
+        # Decide the next step based on the plan
+        if next_task:
+            agent_to_call = next_task["agent"]
+            # Mark the task as in_progress and route to the agent
+            next_task["status"] = "in_progress"
+            state["next"] = agent_to_call
+            logging.info(f"Routing to next agent in plan: {agent_to_call} for task: '{next_task['task']}'")
+        else:
+            # If there are no more pending tasks, the plan is complete.
             state["next"] = "FINISH"
-            logging.info("All tasks completed; setting next to FINISH")
-            return state
-        
-        # Explicitly copy plan into a new variable for the chain
-        plan_for_chain = state.get("plan", [])
-        
-        # Explicitly convert plan to string when logging
-        logging.info(f"Plan before supervisor chain: {json.dumps(plan_for_chain)}")
-        
-        # Modify how the chain is invoked to ensure plan is passed correctly
-        result = supervisor_chain.invoke({
-            "messages": state["messages"],
-            "agent_scratchpad": state.get("agent_scratchpad", []),
-            "plan": plan_for_chain  # Pass explicitly rather than relying on state
-        })
-        
-        logging.info(f"Supervisor chain output: {result}")
-        
-        # Extract next step from the result
-        next_step = result.get("next")
-        
-        # Add validation for the returned plan
-        updated_plan = result.get("plan", state.get("plan", []))
-        
-        # Save the updated plan back with validation
-        if isinstance(updated_plan, list):
-            state["plan"] = updated_plan
-        elif isinstance(updated_plan, str):
-            try:
-                state["plan"] = json.loads(updated_plan)
-            except Exception as e:
-                # Keep existing plan if parsing fails
-                logging.error(f"Failed to parse updated plan: {updated_plan}, error: {str(e)}")
-        
-        # Critical validation step
-        valid_next_steps = ["RESPOND", "FINISH"] + members
-        logging.info(f"next_step type: {type(next_step)}, value: {repr(next_step)}, valid_steps: {valid_next_steps}")
-        
-        if next_step not in valid_next_steps:
-            # Handle the case where LLM incorrectly outputs a tool name instead of a routing option
-            if next_step == "create_or_update_plan":
-                # If LLM tries to route to the planning tool, find the first pending task in the plan
-                # and route to that agent instead
-                if state["plan"]:
-                    for task in state["plan"]:
-                        if task.get("status") == "pending":
-                            next_step = task.get("agent")
-                            logging.info(f"Corrected routing from 'create_or_update_plan' to '{next_step}'")
-                            break
-                    else:
-                        # If no pending tasks, finish
-                        next_step = "FINISH"
-                        logging.info("No pending tasks in plan, routing to FINISH")
-                else:
-                    # No plan, route to first available agent
-                    next_step = members[0] if members else "FINISH"
-                    logging.info(f"No plan available, routing to {next_step}")
-            else:
-                # For any other invalid routing, default to FINISH
-                original_next_step = next_step
-                next_step = "FINISH"
-                logging.error(f"Invalid next_step '{original_next_step}' received. Defaulting to 'FINISH'.")
-                state["messages"].append(AIMessage(content=f"Error: Invalid step '{original_next_step}'. Finishing.", name="Supervisor"))
+            logging.info("No pending tasks in plan. Routing to FINISH.")
 
-        # Handle special case for RESPOND option
-        if next_step == "RESPOND":
-            state["next"] = "RESPOND"
-            return state
-
-        # Set final routing decision
-        state["next"] = next_step
-        
-        # If routing to an agent, mark the corresponding task as in_progress
-        if next_step in members and state["plan"]:
-            for task in state["plan"]:
-                if task.get("agent") == next_step and task.get("status") == "pending":
-                    task["status"] = "in_progress"
-                    logging.info(f"Setting task '{task.get('task')}' as in_progress for {next_step}")
-                    break
-
-        # Log the final plan and routing decision
-        logging.info(f"Final plan: {json.dumps(state.get('plan', []))}")
-        logging.info(f"Final routing decision: {next_step}")
         return state
 
     def supervisor_response(state):
@@ -380,13 +293,9 @@ For visualization and data analysis requests (like plotting, data manipulation, 
         for line in stack_trace[:-1]:  # Exclude the current frame
             logging.info(line.strip())
         
-        # Get model name from session state or default for CLI
-        from ..config import IS_CLI_MODE
-        if IS_CLI_MODE:
-            model_name = "gpt-4.1"  # Default model for CLI
-        else:
-            model_name = st.session_state.get("model_name", "gpt-4.1")
-        logging.info(f"Using model: {model_name}")
+        # Get model name using the factory
+        llm = get_llm()
+        logging.info(f"Using model: {llm.model_name}")
         
         # Debug session state keys
         session_state_keys = list(st.session_state.keys())
@@ -615,7 +524,6 @@ Please provide a response to the latest user query, taking into account the conv
         
         # Invoke the LLM with the full context
         try:
-            llm = ChatOpenAI(api_key=API_KEY, model_name=model_name)
             response = llm.invoke([HumanMessage(content=prompt)])
             logging.info(f"LLM response received, length: {len(response.content)}")
             logging.info(f"Response preview: {response.content[:200]}...")
@@ -689,6 +597,9 @@ Please provide a response to the latest user query, taking into account the conv
     if dataframe_agent:
         workflow.add_node("DataFrameAgent", 
                          functools.partial(agent_node, agent=dataframe_agent, name="DataFrameAgent"))
+    # Add the new WriterAgent node
+    if writer_agent:
+        workflow.add_node("WriterAgent", functools.partial(agent_node, agent=writer_agent, name="WriterAgent"))
     workflow.add_node("supervisor", supervisor_with_planning)
     workflow.add_node("supervisor_response", supervisor_response)
 

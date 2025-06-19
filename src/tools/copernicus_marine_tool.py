@@ -11,6 +11,7 @@ import uuid
 import xarray as xr
 import pandas as pd
 import numpy as np
+import sys
 import streamlit as st
 from pydantic import BaseModel, Field
 from typing import Optional, List, Literal

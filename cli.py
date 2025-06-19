@@ -319,18 +319,20 @@ class CLIInterface:
         print("\n📥 Loading selected datasets...")
         load_selected_datasets_into_cache(selected_dois, self.session_state)
         set_active_datasets_from_selection(self.session_state)
-        
+
         # Get dataset info for active datasets
         active_datasets_info = get_datasets_info_for_active_datasets(self.session_state)
-        
+
         if not active_datasets_info:
             print("\n⚠️ Failed to load datasets.")
             return
-        
+
         # Create and invoke supervisor agent
         print(f"\n🤖 Analyzing with query: '{query}'")
-        
-        # Log the query for debugging
+
+        # FIX: Add the user's query to the message history before invoking the agent
+        self.session_state["messages_data_agent"].append({"role": "user", "content": query})
+
         logging.info(f"CLI Analysis Query: {query}")
         logging.info(f"Selected DOIs: {', '.join(selected_dois)}")
         logging.info(f"Active datasets count: {len(active_datasets_info)}")

@@ -39,7 +39,8 @@ def planning_tool(user_query: str, conversation_history: str, available_agents: 
     3. Status tracking (pending, in_progress, completed, failed)
     
     CRITICAL PLANNING GUIDELINES:
-    - SIMPLICITY IS KEY: Create the MINIMUM number of tasks needed - usually 1-2 tasks, but complex workflows may require more
+    - SIMPLICITY IS KEY: Create the MINIMUM number of tasks needed - usually 1-2 tasks, but complex workflows may require more.
+    - **WRITER AGENT RULE**: If the workflow requires more than one specialist agent (e.g., OceanographerAgent and EcologistAgent), you MUST add a final task: `{"task": "Synthesize the findings from all agents into a cohesive final report.", "agent": "WriterAgent", "status": "pending"}`. This should always be the last task.
     - AVOID TASK SPLITTING: For simple queries that can be solved in one step, create JUST ONE task
     - DIRECT IMPLEMENTATION: For basic operations like counting, finding maximums, or calculating statistics, use a SINGLE task
     

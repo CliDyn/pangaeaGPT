@@ -4,7 +4,6 @@ import streamlit as st
 import pandas as pd
 from pydantic import BaseModel, Field
 from typing import Optional
-from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool
 from langchain.agents.format_scratchpad.openai_tools import format_to_openai_tool_messages
@@ -17,7 +16,7 @@ from langchain_community.chat_message_histories import ChatMessageHistory
 from ..search.search_pg_default import pg_search_default, direct_access_doi
 from ..search.publication_qa_tool import answer_publication_questions, PublicationQAArgs
 from ..tools.parallel_search_tool import parallel_search_pangaea, ParallelSearchArgs
-from ..config import API_KEY
+from ..llm_factory import get_llm  # Use the new factory
 
 # Define the arguments schema for the search tool
 class SearchPangaeaArgs(BaseModel):
@@ -141,13 +140,8 @@ def create_search_agent(datasets_info=None, search_mode="simple"):
         datasets_info: Optional information about existing datasets
         search_mode: "simple" for single search, "deep" for multi-search
     """
-    # Get model name with CLI mode support
-    from ..config import IS_CLI_MODE
-    if IS_CLI_MODE:
-        model_name = "gpt-4.1"  # Default model for CLI
-    else:
-        model_name = st.session_state.get("model_name", "gpt-4.1-nano")
-    llm = ChatOpenAI(api_key=API_KEY, model_name=model_name, temperature=0.7)
+    # Use the factory function to get the LLM. Search can have higher temperature for creativity.
+    llm = get_llm(temperature=0.7)
 
     # Adjust system prompt based on mode
     if search_mode == "simple":

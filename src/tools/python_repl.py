@@ -94,10 +94,6 @@ class CustomPythonREPLTool(PythonREPLTool):
         logging.info(f"Results directory available at: {results_dir}")
         logging.info(f"Code to execute:\n{query}")
 
-        # Get list of image files BEFORE execution
-        before_exec = set()
-        if os.path.exists(results_dir):
-            before_exec = set(os.listdir(results_dir))
 
         # Redirect stdout to capture output
         old_stdout = sys.stdout
@@ -113,51 +109,43 @@ class CustomPythonREPLTool(PythonREPLTool):
             exec(query, local_context)
             output = redirected_output.getvalue()
             
-            # Check if any plots were saved to results_dir
-            if os.path.exists(results_dir):
-                # Re-check after execution
-                import time
-                time.sleep(0.1)  # Brief pause to ensure file is written
-                after_exec = set(os.listdir(results_dir))
+            # Scan the captured standard output for printed file paths.
+            # This is more reliable than comparing directory listings.
+            image_extensions = ('.png', '.jpg', '.jpeg', '.svg', '.pdf')
+            output_lines = output.strip().split('\n')
+            for line in output_lines:
+                # Check if a line is a valid, existing file path and ends with an image extension
+                potential_path = line.strip()
+                if potential_path.lower().endswith(image_extensions) and os.path.exists(potential_path):
+                    if potential_path not in generated_plots:
+                        generated_plots.append(potential_path)
+                        logging.info(f"Found plot path in stdout: {potential_path}")
+
+            if generated_plots:
+                plot_generated = True
+                # Store paths in session state
+                st.session_state.saved_plot_path = generated_plots[0]
+                st.session_state.plot_image = generated_plots[0]
+                st.session_state.new_plot_path = generated_plots[0]
+                st.session_state.new_plot_generated = True
                 
-                # Find new files
-                new_files = after_exec - before_exec
-                
-                # Check for new image files
-                image_extensions = ('.png', '.jpg', '.jpeg', '.svg', '.pdf')
-                new_images = [f for f in new_files if f.lower().endswith(image_extensions)]
-                
-                if new_images:
-                    plot_generated = True
-                    for img_file in new_images:
-                        img_path = os.path.join(results_dir, img_file)
-                        generated_plots.append(img_path)
-                        logging.info(f"Found newly generated plot: {img_path}")
-                    
-                    # Store paths in session state
-                    if generated_plots:
-                        st.session_state.saved_plot_path = generated_plots[0]
-                        st.session_state.plot_image = generated_plots[0]
-                        st.session_state.new_plot_path = generated_plots[0]
-                        st.session_state.new_plot_generated = True
-                        
-                        log_history_event(
-                            st.session_state,
-                            "plot_generated",
-                            {
-                                "plot_paths": generated_plots,
-                                "agent": "VisualizationAgent",
-                                "description": "Plots generated in results directory",
-                                "content": query
-                            }
-                        )
+                log_history_event(
+                    st.session_state,
+                    "plot_generated",
+                    {
+                        "plot_paths": generated_plots,
+                        "agent": "PythonREPL",
+                        "description": "Plots generated and path printed to stdout",
+                        "content": query
+                    }
+                )
 
             # Include output in the result string
             result_message = f"Execution completed. "
             if plot_generated:
                 result_message += f"Plots saved to results directory: {', '.join([os.path.basename(p) for p in generated_plots])}"
             else:
-                result_message += "No plots generated."
+                result_message += "No plots were generated or their paths were not printed to output."
             
             if output.strip():
                 result_message += f"\n\nOutput:\n{output}"

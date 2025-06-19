@@ -4,12 +4,11 @@ import logging
 import streamlit as st
 import pandas as pd
 import xarray as xr
-from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.agents import create_openai_tools_agent, AgentExecutor
 
 from ..prompts import Prompts
-from ..config import API_KEY
+from ..llm_factory import get_llm  # Use the new factory
 from ..tools.python_repl import CustomPythonREPLTool
 from ..tools.reflection_tools import reflect_tool
 from ..tools.package_tools import install_package_tool
@@ -179,13 +178,8 @@ def create_oceanographer_agent(user_query, datasets_info):
     # Generate the prompt with the modified datasets_text
     prompt = Prompts.generate_oceanographer_agent_system_prompt(user_query, datasets_text, dataset_variables)
   
-    # Initialize the LLM with CLI mode support
-    from ..config import IS_CLI_MODE
-    if IS_CLI_MODE:
-        model_name = "gpt-4.1"  # Default model for CLI
-    else:
-        model_name = st.session_state.model_name
-    llm = ChatOpenAI(api_key=API_KEY, model_name=model_name)
+    # Initialize the LLM using the factory
+    llm = get_llm(temperature=0.1)
 
     # Create the CustomPythonREPLTool with sandbox paths
     repl_tool = CustomPythonREPLTool(datasets=datasets)

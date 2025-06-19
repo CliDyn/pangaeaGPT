@@ -74,7 +74,7 @@ with st.sidebar:
 
     model_name = st.selectbox(
         "Select Model",
-        ["gpt-4.1", "gpt-4.1-nano", "gpt-4o", "gpt-4o-mini", "o1-mini", "o3-mini"],
+        ["gpt-4.1", "gpt-4.1-nano", "gpt-4o", "o3-mini", "o3", "o4-mini", "codex-mini-latest"],
         index=0,
         key="model_name"
     )
@@ -370,6 +370,11 @@ if st.session_state.current_page == "search":
         if submit_button and user_input:
             st.session_state.selected_text = ""
             
+            # 1. ADD USER MESSAGE FIRST
+            st.session_state.messages_search.append({"role": "user", "content": user_input})
+            # Log user event
+            log_history_event(st.session_state, "user_message", {"page": "search", "content": user_input})
+            
             # Create a container for search progress
             with message_placeholder:
                 search_container = st.container()
@@ -406,7 +411,7 @@ if st.session_state.current_page == "search":
                     if st.session_state.search_mode == "deep":
                         st.session_state.processing = True
                     
-                    # Execute search BEFORE adding the user message to the history
+                    # 2. EXECUTE SEARCH (this will append the dataset table message)
                     ai_message = process_search_query(user_input, search_agent, st.session_state)
                     
                     # Stop processing flag
@@ -443,12 +448,11 @@ if st.session_state.current_page == "search":
                     if parallel_status:
                         parallel_status.empty()
             
-            # NOW add both the user message and the AI message for UI display
-            st.session_state.messages_search.append({"role": "user", "content": user_input})
+            # 3. ADD FINAL ASSISTANT SUMMARY MESSAGE
+            # The message with the table has already been added inside process_search_query.
             st.session_state.messages_search.append({"role": "assistant", "content": ai_message})
             
-            # Log the events
-            log_history_event(st.session_state, "user_message", {"page": "search", "content": user_input})
+            # Log the assistant event
             log_history_event(st.session_state, "assistant_message", {"page": "search", "content": ai_message})
             
             # Update search tracking

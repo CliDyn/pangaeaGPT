@@ -5,6 +5,7 @@ from .visualization_agent import create_visualization_agent
 from .oceanographer_agent import create_oceanographer_agent
 from .ecologist_agent import create_ecologist_agent
 from .supervisor_agent import create_supervisor_agent, create_and_invoke_supervisor_agent
+from .writer_agent import create_writer_agent
 
 # Import initialize_agents from visualization_agent (will be updated)
 from .visualization_agent import initialize_agents
@@ -17,5 +18,6 @@ __all__ = [
     'create_ecologist_agent',
     'initialize_agents',
     'create_supervisor_agent',
-    'create_and_invoke_supervisor_agent'
+    'create_and_invoke_supervisor_agent',
+    'create_writer_agent'
 ]

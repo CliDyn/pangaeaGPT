@@ -1,13 +1,12 @@
 # src/agents/pandas_agent.py
 import logging
 import streamlit as st
-from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.agents.agent_types import AgentType
 from langchain_experimental.agents.agent_toolkits.pandas.base import create_pandas_dataframe_agent
 
-from ..config import API_KEY
 from ..prompts import Prompts
+from ..llm_factory import get_llm  # Use the new factory
 
 def create_pandas_agent(user_query, datasets_info):
     """
@@ -20,17 +19,9 @@ def create_pandas_agent(user_query, datasets_info):
     Returns:
         AgentExecutor: The pandas agent executor
     """
-    # Initialize the language model with CLI mode support
-    from ..config import IS_CLI_MODE
-    if IS_CLI_MODE:
-        model_name = "gpt-4.1"  # Default model for CLI
-    else:
-        model_name = st.session_state.model_name
-    
-    if model_name == "o3-mini":
-        llm = ChatOpenAI(api_key=API_KEY, model_name=model_name)
-    else:
-        llm = ChatOpenAI(api_key=API_KEY, model_name=model_name)
+    # Use the factory function to get the correct LLM instance.
+    # For a pandas agent, a low temperature is best for predictable, factual responses.
+    llm = get_llm(temperature=0.0)
 
     # Assign unique variable names to each dataframe and collect dataframes
     dataset_variables = []

@@ -4,26 +4,19 @@ import pandas as pd
 import pickle
 import streamlit as st
 import requests
-import pangaeapy.pandataset as pd
+import pangaeapy.pandataset as pdataset
 import re
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
-from langchain_openai import ChatOpenAI
 from langchain.chains import ConversationalRetrievalChain
 from langchain.memory import ConversationBufferMemory
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.retrievers import ParentDocumentRetriever
 from langchain.storage import InMemoryStore
-from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 from ..config import API_KEY
-
-# Set your OpenAI API key
-#openai_api_key = st.secrets["general"]["openai_api_key"]
-
-# Set the API key for OpenAI
-#os.environ["OPENAI_API_KEY"] = openai_api_key
+from ..llm_factory import get_llm # Use the new factory
 
 
 class PublicationQAArgs(BaseModel):
@@ -36,7 +29,7 @@ class PublicationQAArgs(BaseModel):
 def get_related_publication_info(doi):
     try:
         dataset_id = doi.split('.')[-1]
-        ds = pd.PanDataSet(int(dataset_id))
+        ds = pdataset.PanDataSet(int(dataset_id))
 
         # Check supplement_to first
         supplement_to = ds.supplement_to
@@ -197,12 +190,9 @@ def answer_publication_questions(doi: str, question: str):
             chroma_path, docstore_path = create_embeddings(pdf_path)
 
         retriever = load_retriever(docstore_path, chroma_path)
-
-        model_name = st.session_state.get("model_name", "gpt-3.5-turbo")
-        if model_name == "o3-mini":
-            llm = ChatOpenAI(api_key=API_KEY, model_name=model_name)
-        else:
-            llm = ChatOpenAI(api_key=API_KEY, model_name=model_name)
+        
+        # Use the factory to get the LLM instance
+        llm = get_llm()
 
         memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
         conversation_chain = ConversationalRetrievalChain.from_llm(
