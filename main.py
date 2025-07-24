@@ -340,7 +340,7 @@ def create_and_invoke_supervisor_agent(user_query: str, datasets_info: list, mem
     # The line below was adding it a second time, causing duplication. It has been removed.
     # messages.append(HumanMessage(content=user_query, name="User"))
     
-    limited_messages = messages[-15:]  # Keep last 15 messages including the new query
+    limited_messages = messages[-10:]  # Keep last 15 messages including the new query
     initial_state = {
         "messages": limited_messages,
         "next": "supervisor",

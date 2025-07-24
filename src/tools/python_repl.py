@@ -1,4 +1,5 @@
 # src/tools/python_repl.py
+
 import os
 import sys
 import logging
@@ -10,183 +11,209 @@ from io import StringIO
 from pydantic import BaseModel, Field, PrivateAttr
 from langchain_experimental.tools import PythonREPLTool
 from typing import Any
+import subprocess
+import threading
+import queue
 
-from ..utils import log_history_event, generate_unique_image_path
+from ..utils import log_history_event
+
+# --- Start of new code for persistent REPL ---
+
+class PersistentREPL:
+    """
+    Manages a single long-lived interactive Python process.
+    """
+    def __init__(self):
+        self._process = subprocess.Popen(
+            [sys.executable, "-i", "-q", "-u"],  # -u for unbuffered output
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding='utf-8',
+            errors='replace'
+        )
+        self._end_marker = f"---END_OF_OUTPUT_{os.urandom(8).hex()}---"
+        self._output_queue = queue.Queue()
+        self._stderr_queue = queue.Queue()
+
+        # Threads for reading stdout and stderr without blocking
+        self._stdout_thread = threading.Thread(target=self._enqueue_output, args=(self._process.stdout, self._output_queue))
+        self._stderr_thread = threading.Thread(target=self._enqueue_output, args=(self._process.stderr, self._stderr_queue))
+        self._stdout_thread.daemon = True
+        self._stderr_thread.daemon = True
+        self._stdout_thread.start()
+        self._stderr_thread.start()
+        
+        # Flag to track if session has been initialized
+        self.is_initialized = False
+
+    def _enqueue_output(self, pipe, q):
+        for line in iter(pipe.readline, ''):
+            q.put(line)
+        pipe.close()
+
+    def run(self, code: str, timeout: int = 60) -> str:
+        """Execute code in the persistent process."""
+        # Clear queues before execution
+        while not self._output_queue.empty(): self._output_queue.get_nowait()
+        while not self._stderr_queue.empty(): self._stderr_queue.get_nowait()
+
+        command = f"{code}\nprint('{self._end_marker}')\n"
+        try:
+            self._process.stdin.write(command)
+            self._process.stdin.flush()
+        except BrokenPipeError:
+            logging.error("REPL process died. Attempting restart.")
+            self.__init__() # Restart the process
+            return "ERROR: The Python REPL process died and was restarted. Please try your command again."
+
+        output_lines = []
+        stderr_lines = []
+        
+        while True:
+            try:
+                line = self._output_queue.get(timeout=timeout)
+                if self._end_marker in line:
+                    break
+                output_lines.append(line)
+            except queue.Empty:
+                logging.error("Code execution timeout in REPL.")
+                # Read stderr for diagnostics
+                while not self._stderr_queue.empty():
+                    stderr_lines.append(self._stderr_queue.get_nowait())
+                error_info = "".join(stderr_lines)
+                return f"TIMEOUT ERROR: Code execution exceeded {timeout} seconds. Stderr: {error_info}"
+
+        # Collect remaining stderr
+        while not self._stderr_queue.empty():
+            stderr_lines.append(self._stderr_queue.get_nowait())
+
+        return "".join(stderr_lines) + "".join(output_lines)
+
+    def close(self):
+        if self._process:
+            self._process.terminate()
+            self._process = None
+
+class REPLManager:
+    """
+    Singleton for managing PersistentREPL instances for each session (thread_id).
+    """
+    _instances: dict[str, PersistentREPL] = {}
+    _lock = threading.Lock()
+
+    @classmethod
+    def get_repl(cls, session_id: str) -> PersistentREPL:
+        with cls._lock:
+            if session_id not in cls._instances:
+                logging.info(f"Creating new persistent REPL for session: {session_id}")
+                cls._instances[session_id] = PersistentREPL()
+            return cls._instances[session_id]
+
+    @classmethod
+    def cleanup_repl(cls, session_id: str):
+        with cls._lock:
+            if session_id in cls._instances:
+                logging.info(f"Closing and removing REPL for session: {session_id}")
+                cls._instances[session_id].close()
+                del cls._instances[session_id]
+
+# --- End of new code ---
+
 
 class CustomPythonREPLTool(PythonREPLTool):
     _datasets: dict = PrivateAttr()
 
     def __init__(self, datasets, **kwargs):
-        """
-        Custom Python REPL tool that injects dataset variables and logs plot generation.
-        :param datasets: Dictionary { "dataset_1": <DataFrame>, "dataset_2": <DataFrame>, ... }
-        """
         super().__init__(**kwargs)
         self._datasets = datasets
 
-    def _run(self, query: str, **kwargs) -> Any:
-        import streamlit as st
-        import matplotlib.pyplot as plt
-        import pandas as pd
-        import xarray as xr
-        import os
-        import logging
-        from io import StringIO
-        from src.utils import log_history_event
+    def _initialize_session(self, repl: PersistentREPL) -> None:
+        """Prepare the REPL session by importing libraries and injecting variables."""
+        logging.info("Initializing persistent REPL session...")
 
-        # Prepare local context with necessary packages
-        local_context = {
-            "st": st, 
-            "plt": plt, 
-            "pd": pd,
-            "xr": xr,
-            "os": os
-        }
+        # 1. Basic imports
+        initialization_code = [
+            "import os",
+            "import sys",
+            "import pandas as pd",
+            "import matplotlib.pyplot as plt",
+            "import xarray as xr",
+            "import logging",
+            "from io import StringIO"
+        ]
 
-        # Inject the user's datasets
+        # 2. Inject variables
+        local_context = {}
         local_context.update(self._datasets)
         
-        # Extract the sandbox directory from the datasets
-        sandbox_path = None
-        
-        # First check if uuid_main_dir is in datasets (it's added by visualization agents)
-        if "uuid_main_dir" in self._datasets:
-            sandbox_path = self._datasets["uuid_main_dir"]
-            logging.info(f"Found uuid_main_dir for plots: {sandbox_path}")
-        else:
-            # Otherwise, try to find it from dataset paths
-            for key, value in self._datasets.items():
-                if isinstance(value, str) and os.path.isdir(value) and "sandbox" in value:
-                    # Get the parent directory (sandbox UUID directory)
-                    potential_sandbox = os.path.dirname(os.path.abspath(value))
-                    if "sandbox" in potential_sandbox:
-                        sandbox_path = potential_sandbox
-                        logging.info(f"Extracted sandbox path from {key}: {sandbox_path}")
-                        break
-        
-        # Create and provide the results directory
+        sandbox_path = local_context.get("uuid_main_dir")
         if sandbox_path:
             results_dir = os.path.join(sandbox_path, 'results')
             os.makedirs(results_dir, exist_ok=True)
-            local_context['results_dir'] = results_dir
-            logging.info(f"Created/verified results directory: {results_dir}")
+            initialization_code.append(f"results_dir = r'{results_dir.replace('\\', '/')}'")
+            logging.info(f"Injected variable results_dir: {results_dir}")
         else:
-            # Fallback to tmp/figs if no sandbox
-            results_dir = os.path.join('tmp', 'figs')
-            os.makedirs(results_dir, exist_ok=True)
-            local_context['results_dir'] = results_dir
-            logging.warning(f"No sandbox found, using fallback results directory: {results_dir}")
-        
-        # Add dataset path variables for any string paths (sandbox directories)
+            logging.warning("uuid_main_dir not found, results_dir will not be defined.")
+
         for key, value in self._datasets.items():
             if isinstance(value, str) and os.path.isdir(value):
-                # Create a path variable like dataset_1_path for dataset_1
                 path_var_name = f"{key}_path"
-                # Use the absolute path with consistent slash direction
                 abs_path = os.path.abspath(value).replace('\\', '/')
-                local_context[path_var_name] = abs_path
-                
-                # Also log which path variables are available
-                logging.info(f"Added path variable {path_var_name} = {abs_path}")
+                initialization_code.append(f"{path_var_name} = r'{abs_path}'")
+                logging.info(f"Injected path variable {path_var_name} = {abs_path}")
+            # Note: We cannot directly inject large DataFrames,
+            # the agent will need to load them using the injected paths.
 
-        # Log the code being executed for debugging
-        logging.info(f"Executing code with available variables: {list(local_context.keys())}")
-        logging.info(f"Results directory available at: {results_dir}")
-        logging.info(f"Code to execute:\n{query}")
+        # 3. Execute initialization code
+        full_init_code = "\n".join(initialization_code)
+        logging.debug(f"REPL initialization code:\n{full_init_code}")
+        result = repl.run(full_init_code)
+        logging.info(f"REPL session initialization result: {result.strip()}")
+        repl.is_initialized = True
 
-
-        # Redirect stdout to capture output
-        old_stdout = sys.stdout
-        redirected_output = StringIO()
-        sys.stdout = redirected_output
-
-        plot_generated = False
-        generated_plots = []
-        output = ""
+    def _run(self, query: str, **kwargs) -> Any:
+        """
+        Execute code using the persistent REPL tied to the session.
+        """
+        # Get thread_id from session_state
+        if 'thread_id' not in st.session_state or not st.session_state.thread_id:
+            logging.error("CRITICAL ERROR: thread_id not found in session_state. Cannot run persistent REPL.")
+            return "ERROR: Session ID is missing. Cannot continue."
         
-        try:
-            # Execute user code
-            exec(query, local_context)
-            output = redirected_output.getvalue()
-            
-            # Scan the captured standard output for printed file paths.
-            # This is more reliable than comparing directory listings.
-            image_extensions = ('.png', '.jpg', '.jpeg', '.svg', '.pdf')
-            output_lines = output.strip().split('\n')
-            for line in output_lines:
-                # Check if a line is a valid, existing file path and ends with an image extension
-                potential_path = line.strip()
-                if potential_path.lower().endswith(image_extensions) and os.path.exists(potential_path):
-                    if potential_path not in generated_plots:
-                        generated_plots.append(potential_path)
-                        logging.info(f"Found plot path in stdout: {potential_path}")
+        session_id = st.session_state.thread_id
+        repl = REPLManager.get_repl(session_id)
 
-            if generated_plots:
-                plot_generated = True
-                # Store paths in session state
-                st.session_state.saved_plot_path = generated_plots[0]
-                st.session_state.plot_image = generated_plots[0]
-                st.session_state.new_plot_path = generated_plots[0]
-                st.session_state.new_plot_generated = True
-                
-                log_history_event(
-                    st.session_state,
-                    "plot_generated",
-                    {
-                        "plot_paths": generated_plots,
-                        "agent": "PythonREPL",
-                        "description": "Plots generated and path printed to stdout",
-                        "content": query
-                    }
-                )
+        # "Warm up" the REPL on first call in the session
+        if not repl.is_initialized:
+            self._initialize_session(repl)
 
-            # Include output in the result string
-            result_message = f"Execution completed. "
-            if plot_generated:
-                result_message += f"Plots saved to results directory: {', '.join([os.path.basename(p) for p in generated_plots])}"
-            else:
-                result_message += "No plots were generated or their paths were not printed to output."
-            
-            if output.strip():
-                result_message += f"\n\nOutput:\n{output}"
+        logging.info(f"Executing code in persistent REPL for session {session_id}:\n{query}")
+        
+        # Execute user code
+        output = repl.run(query)
 
-            return {
-                "result": result_message,
-                "output": output,
-                "plot_images": generated_plots
-            }
-        except Exception as e:
-            logging.error(f"Error during code execution: {e}")
-            console_output = redirected_output.getvalue()
-            
-            error_output = f"ERROR: {str(e)}\n\n"
-            
-            # Add helpful error diagnostics
-            if "FileNotFoundError" in str(e):
-                error_output += "This looks like a path problem. Please check:\n"
-                error_output += "1. You're using the exact path variables (dataset_1_path, etc.)\n"
-                error_output += "2. You're using os.path.join() to combine paths\n"
-                error_output += "3. The file you're trying to access actually exists\n\n"
-                error_output += "Available path variables:\n"
-                for key in local_context:
-                    if key.endswith('_path') or key == 'results_dir':
-                        error_output += f"- {key}: {local_context[key]}\n"
-            
-            elif "ModuleNotFoundError" in str(e):
-                module_name = str(e).split("No module named ")[-1].strip("'")
-                error_output += f"Missing module: {module_name}\n"
-                error_output += "You can install it using the install_package tool."
-            
-            # Add any output that was generated before the error occurred
-            if console_output:
-                error_output += f"\nOutput before error:\n{console_output}"
-            
-            return {
-                "error": "ExecutionError",
-                "message": error_output,
-                "output": console_output,
-                "plot_images": []  # Return empty list on error
-            }
-        finally:
-            # Restore stdout
-            sys.stdout = old_stdout
+        # Logic for detecting generated plots (remains the same)
+        generated_plots = []
+        image_extensions = ('.png', '.jpg', '.jpeg', '.svg', '.pdf')
+        output_lines = output.strip().split('\n')
+        for line in output_lines:
+            potential_path = line.strip()
+            if potential_path.lower().endswith(image_extensions) and os.path.exists(potential_path):
+                if potential_path not in generated_plots:
+                    generated_plots.append(potential_path)
+                    logging.info(f"Found plot path in output: {potential_path}")
+
+        if generated_plots:
+            st.session_state.new_plot_generated = True
+            log_history_event(
+                st.session_state, "plot_generated",
+                {"plot_paths": generated_plots, "agent": "PythonREPL", "content": query}
+            )
+
+        return {
+            "result": output,
+            "output": output, # For backward compatibility
+            "plot_images": generated_plots
+        }

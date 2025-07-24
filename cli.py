@@ -587,8 +587,8 @@ Examples:
     parser.add_argument('--langchain-project', type=str, help='LangChain project name (optional)')
     
     # Model selection
-    parser.add_argument('--model', type=str, default='gpt-4.1',
-                       choices=['gpt-4.1', 'gpt-4.1-nano', 'gpt-4o', 'gpt-4o-mini', 'o1-mini', 'o3-mini'],
+    parser.add_argument('--model', type=str, default='gpt-4.1-mini',
+                       choices=['gpt-4.1-mini', 'gpt-4.1', 'gpt-4.1-nano', 'gpt-4o', 'gpt-4o-mini', 'o1-mini', 'o3-mini'],
                        help='Model to use (default: gpt-4.1)')
     
     # Search options

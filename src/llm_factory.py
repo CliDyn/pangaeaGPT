@@ -25,7 +25,7 @@ def get_llm(model_name: str = None, temperature: float = 0.7):
     """
     if model_name is None:
         # This works for both Streamlit and CLI mode, as CLI mocks session_state
-        model_name = st.session_state.get("model_name", "gpt-4.1")
+        model_name = st.session_state.get("model_name", "gpt-4.1-mini")
 
     # List of models that are known to NOT support the 'temperature' parameter.
     # To add a new model with this restriction, just add its name to this list.

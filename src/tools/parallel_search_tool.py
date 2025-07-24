@@ -18,7 +18,7 @@ from ..search.search_pg_default import pg_search_default
 
 class ParallelSearchArgs(BaseModel):
     search_queries: List[str] = Field(description="List of SEARCH QUERY STRINGS (NOT DOIs, NOT full text) to execute in parallel. Example: ['temperature data', 'salinity measurements', 'arctic ocean CTD']")
-    count_per_query: Optional[int] = Field(default=20, description="Number of results per query (5-50)")
+    count_per_query: Optional[int] = Field(default=30, description="Number of results per query (5-50)")
     mindate: Optional[str] = Field(default=None, description="Minimum date in 'YYYY-MM-DD' format")
     maxdate: Optional[str] = Field(default=None, description="Maximum date in 'YYYY-MM-DD' format")
     minlat: Optional[float] = Field(default=None, description="Minimum latitude in decimal degrees")
@@ -47,7 +47,7 @@ class EnhancedParallelSearchExecutor:
     def __init__(self, max_workers: int = 4):
         self.max_workers = min(max_workers, 5)  # Limit to prevent overwhelming PANGAEA
         
-    def execute_single_search_with_metadata(self, query: str, count: int = 20, **search_params) -> SearchResult:
+    def execute_single_search_with_metadata(self, query: str, count: int = 30, **search_params) -> SearchResult:
         """
         Execute a single search query with FULL metadata extraction.
         Returns the complete DataFrame with all metadata fields preserved.
@@ -94,7 +94,7 @@ class EnhancedParallelSearchExecutor:
                 error=str(e)
             )
     
-    def execute_parallel_searches_with_metadata(self, queries: List[str], count_per_query: int = 20, 
+    def execute_parallel_searches_with_metadata(self, queries: List[str], count_per_query: int = 30, 
                                               **search_params) -> List[SearchResult]:
         """
         Execute multiple searches in parallel, preserving ALL metadata from each search.
@@ -168,7 +168,7 @@ class EnhancedParallelSearchExecutor:
         return search_results
 
 
-def parallel_search_pangaea(search_queries: List[str], count_per_query: int = 20,
+def parallel_search_pangaea(search_queries: List[str], count_per_query: int = 30,
                           mindate: Optional[str] = None, maxdate: Optional[str] = None,
                           minlat: Optional[float] = None, maxlat: Optional[float] = None,
                           minlon: Optional[float] = None, maxlon: Optional[float] = None) -> Dict[str, Any]:

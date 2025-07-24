@@ -21,7 +21,7 @@ from ..llm_factory import get_llm  # Use the new factory
 # Define the arguments schema for the search tool
 class SearchPangaeaArgs(BaseModel):
     query: str = Field(description="The search query string.")
-    count: Optional[int] = Field(default=15, description="Number of results to return (5-100).")
+    count: Optional[int] = Field(default=30, description="Number of results to return (5-100).")
     mindate: Optional[str] = Field(default=None, description="The minimum date in 'YYYY-MM-DD' format.")
     maxdate: Optional[str] = Field(default=None, description="The maximum date in 'YYYY-MM-DD' format.")
     minlat: Optional[float] = Field(default=None, description="The minimum latitude in decimal degrees.")
@@ -35,7 +35,7 @@ class DoiDatasetAccess(BaseModel):
 class ConsolidateResultsArgs(BaseModel):
     all_results_json: str = Field(description="JSON string containing ONLY an array of DOI strings. Example: '[\"https://doi.org/10.1594/PANGAEA.123456\", \"https://doi.org/10.1594/PANGAEA.789012\"]'. DO NOT include metadata, scores, names, or any other information - ONLY DOI strings!")
     selection_criteria: str = Field(description="Not used - kept for compatibility")
-    max_results: int = Field(default=15, description="Maximum number of results to return")
+    max_results: int = Field(default=30, description="Maximum number of results to return")
 
 def consolidate_search_results(all_results_json: str, selection_criteria: str, max_results: int = 15):
     """
@@ -52,7 +52,7 @@ def consolidate_search_results(all_results_json: str, selection_criteria: str, m
     """
     import json
     
-    MIN_RESULTS = 10
+    MIN_RESULTS = 20
     
     try:
         # Parse the JSON - expecting ONLY a list of DOI strings
@@ -168,13 +168,13 @@ IMPORTANT: In simple mode, do NOT use consolidate_search_results tool. The searc
 1. **Parallel Multi-Search Strategy**: You can run multiple searches SIMULTANEOUSLY for 3-5x faster results
 2. **Intelligent Query Refinement**: You reformulate queries to maximize relevant results
 3. **Dynamic Result Count**: You decide how many results to fetch based on query complexity (5-50 per search)
-4. **Result Consolidation**: You analyze all results and select the best datasets
+4. **Result Consolidation**: You analyze all results and select the best 30 datasets
 
 **SEARCH STRATEGY GUIDELINES:**
 
 For SIMPLE queries (single parameter/concept):
 - Use parallel_search_pangaea with 2-3 query variations
-- Fetch 10-20 results per search
+- Fetch 20-30 results per search
 - Example: "temperature data" → Try ["temperature", "water temperature", "ocean temperature"]
 
 For COMPLEX queries (multiple parameters/specific requirements):
@@ -229,7 +229,7 @@ The parallel_search_pangaea tool returns:
 **IGNORE SEARCH ENGINE SCORES - TRUST YOUR JUDGMENT!**
 - **DO NOT TRUST ELASTIC SEARCH METRICS**: The scores are often WRONG and misleading
 - **USE YOUR INTELLIGENCE**: You understand the user's intent better than any algorithm
-- **OVERRIDE THE RANKINGS**: A dataset with score 20 might be PERFECT while one with score 80 might be GARBAGE
+- **OVERRIDE THE RANKINGS**: A dataset with score 30 might be PERFECT while one with score 80 might be GARBAGE
 - **BE AGGRESSIVE**: Make bold decisions based on actual relevance, not arbitrary metrics
 
 **BEFORE CONSOLIDATION - MANUAL SELECTION PROCESS:**
@@ -270,7 +270,7 @@ The parallel_search_pangaea tool returns:
     ])
 
     # Enhanced search function that works with multi-search
-    def search_pg_datasets_tool_enhanced(query: str, count: Optional[int] = 15, 
+    def search_pg_datasets_tool_enhanced(query: str, count: Optional[int] = 30, 
                                         mindate: Optional[str] = None, maxdate: Optional[str] = None,
                                         minlat: Optional[float] = None, maxlat: Optional[float] = None,
                                         minlon: Optional[float] = None, maxlon: Optional[float] = None):

@@ -94,9 +94,9 @@ Before routing any task, examine the dataset information below to understand the
 {datasets_text}
 
 **MANDATORY DATA TYPE ROUTING RULES:**
-- **NetCDF/xarray Datasets (.nc, .cdf, .netcdf files)**: NEVER route to DataFrameAgent. Use OceanographerAgent or VisualizationAgent.
-- **pandas DataFrames (.csv files, data.csv)**: Can be routed to any agent including DataFrameAgent.
-- **File folders with unknown formats**: Route to VisualizationAgent or domain-specific agents, NEVER to DataFrameAgent.
+- **NetCDF/xarray Datasets (.nc, .cdf, .netcdf files)**: For VISUALIZATION, route to OceanographerAgent, EcologistAgent, or VisualizationAgent. For pure DATA ANALYSIS (e.g., calculating statistics from the file), you can route to DataFrameAgent.
+- **pandas DataFrames (.csv files, data.csv)**: Can be routed to any agent. DataFrameAgent is the specialist for non-visual analysis.
+- **File folders with unknown formats**: Route to VisualizationAgent for initial exploration.
 - **Failed datasets**: Route to RESPOND to explain the issue.
 
 ### Direct Response Instructions
@@ -120,7 +120,7 @@ For visualization and data analysis requests (like plotting, data manipulation, 
 - **OceanographerAgent**: Use for marine/ocean data visualization, climate analysis, physical oceanography, and when working with ERA5 or Copernicus Marine data. Specializes in temperature, salinity, currents, sea level data. **CAN HANDLE NetCDF/xarray datasets**.
 - **EcologistAgent**: Use for biodiversity data visualization, species analysis, ecological patterns, and biological/environmental studies. Does NOT have access to ERA5/Copernicus Marine tools. **CAN HANDLE NetCDF/xarray datasets**.
 - **VisualizationAgent**: Use for MAPPING tasks, geographic plots, sampling station maps, and general plotting/visualization tasks. ALWAYS route queries containing "map", "plot", "geographic", "station locations", "sampling stations" here. **CAN HANDLE NetCDF/xarray datasets**.
-- **DataFrameAgent**: Use ONLY for data analysis, filtering, manipulation, and statistical operations on **TABULAR DATA (pandas DataFrames)**. **CANNOT HANDLE NetCDF/xarray datasets**. DO NOT route NetCDF files or visualization tasks here.
+- **DataFrameAgent**: Your primary agent for **non-visual data analysis**. Use for filtering, counting, statistics, finding patterns, and answering questions that require running Python code on the data. It can load data from any file path provided in the context. **Route all computational and data manipulation tasks here.**
 
 ### Examples of Correct Data-Type Aware Routing
 - User asks: "Summarize our conversation" → Set "next" to "RESPOND"
@@ -128,15 +128,13 @@ For visualization and data analysis requests (like plotting, data manipulation, 
 - "Analyze species distribution" (CSV dataset) → "EcologistAgent" or "DataFrameAgent"
 - "Create a scatter plot" → "VisualizationAgent"
 - "Plot sampling station map" → "VisualizationAgent"
-- "Calculate statistics" (CSV dataset) → "DataFrameAgent"
-- "Calculate statistics" (NetCDF dataset) → "OceanographerAgent" or "VisualizationAgent" (NOT DataFrameAgent)
-- "Count records" (CSV dataset) → "DataFrameAgent"
-- "Count records" (NetCDF dataset) → "OceanographerAgent" (NOT DataFrameAgent)
+- **"Calculate statistics on the CSV file" → "DataFrameAgent"**
+- **"What is the maximum depth in the NetCDF file?" → "DataFrameAgent" (It will write code to open the file and find the max)**
+- **"Count how many records are in the dataset" (any file type) → "DataFrameAgent"**
 - All tasks completed → Set "next" to "FINISH"
 
 ### REMEMBER
 - **ALWAYS check data types before routing**
-- **NEVER route NetCDF/xarray datasets to DataFrameAgent**
 - Tools like 'create_or_update_plan' are NOT valid options for the "next" field!
 - The planning process happens automatically - your job is only to decide which agent should handle the task next.
 - Only use agent names that are actually available: {', '.join(members)}

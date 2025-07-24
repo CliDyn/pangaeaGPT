@@ -17,8 +17,8 @@ from ..tools.visualization_tools import (
     list_plotting_data_files_tool,
     wise_agent_tool
 )
-from ..tools.era5_retrieval_tool import era5_retrieval_tool
-from ..tools.copernicus_marine_tool import copernicus_marine_tool
+# from ..tools.era5_retrieval_tool import era5_retrieval_tool
+# from ..tools.copernicus_marine_tool import copernicus_marine_tool
 
 def create_visualization_agent(user_query, datasets_info):
     """
@@ -184,9 +184,9 @@ def create_visualization_agent(user_query, datasets_info):
         install_package_tool,
         example_visualization_tool,
         list_plotting_data_files_tool,
-        wise_agent_tool,
-        era5_retrieval_tool,
-        copernicus_marine_tool
+        wise_agent_tool
+        # era5_retrieval_tool,  # Disabled for VisualizationAgent
+        # copernicus_marine_tool  # Disabled for VisualizationAgent
     ]
     
     # Create the agent with the updated prompt and tools
@@ -247,18 +247,11 @@ def initialize_agents(user_query, datasets_info):
             datasets_info=datasets_info
         )
 
-        # 4. Create DataFrameAgent (only for pandas DataFrames)
-        dataframe_agent = None
-        dataframe_datasets = [info for info in datasets_info if isinstance(info['dataset'], pd.DataFrame)]
-        if dataframe_datasets:
-            from .pandas_agent import create_pandas_agent
-            dataframe_agent = create_pandas_agent(
-                user_query=user_query,
-                datasets_info=dataframe_datasets
-            )
-            logging.info(f"DataFrameAgent initialized with {len(dataframe_datasets)} DataFrames")
-        else:
-            logging.info("No pandas DataFrames available; skipping DataFrameAgent initialization")
+        # 4. Create the new powerful DataFrameAgent
+        # We no longer need to check for specific dataframe types, as the new agent is more generic.
+        from .pandas_agent import create_pandas_agent
+        dataframe_agent = create_pandas_agent(user_query, datasets_info)
+        logging.info("DataFrameAgent initialized successfully with new implementation.")
 
         logging.info("All 4 agents initialized successfully")
         return oceanographer_agent, ecologist_agent, visualization_agent, dataframe_agent

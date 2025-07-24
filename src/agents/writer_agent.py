@@ -17,7 +17,7 @@ def create_writer_agent(datasets_info: List[Dict[str, Any]] = None):
     """
     # Use the factory to get a powerful model for high-quality synthesis.
     # We can override the default model if needed.
-    llm = get_llm(model_name="gpt-4o", temperature=0.1)
+    llm = get_llm(temperature=0.1)
 
     # A more directive prompt that enforces a specific workflow
     system_prompt = """You are a professional scientific writer. Your task is to synthesize the results from a multi-agent workflow into a single, cohesive final report.

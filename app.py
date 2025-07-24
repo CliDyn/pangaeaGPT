@@ -74,7 +74,7 @@ with st.sidebar:
 
     model_name = st.selectbox(
         "Select Model",
-        ["gpt-4.1", "gpt-4.1-nano", "gpt-4o", "o3-mini", "o3", "o4-mini", "codex-mini-latest"],
+        ["gpt-4.1-mini", "gpt-4.1", "gpt-4.1-nano", "gpt-4o", "o3-mini", "o3", "o4-mini", "codex-mini-latest"],
         index=0,
         key="model_name"
     )
@@ -488,10 +488,18 @@ if st.session_state.current_page == "search":
         with button_placeholder:
             if st.button('Send Selected Datasets to Data Agent', key='send_datasets_button'):
                 # 1. Force the creation of a new session ID to create a new, clean sandbox.
+                old_thread_id = st.session_state.get("thread_id") # Remember old ID
                 ensure_thread_id(st.session_state, force_new=True)
-                logging.info(f"New Data Agent session started. Sandbox/Thread ID: {st.session_state['thread_id']}")
-                
-                # 2. Clear state from any previous analysis to ensure a clean start.
+                new_thread_id = st.session_state.get("thread_id")
+                logging.info(f"New Data Agent session started. Sandbox/Thread ID: {new_thread_id}")
+
+                # 2. KILL OLD PERSISTENT REPL TO START WITH CLEAN SLATE
+                if old_thread_id:
+                    from src.tools.python_repl import REPLManager
+                    REPLManager.cleanup_repl(old_thread_id)
+                    logging.info(f"Cleaned up persistent REPL for previous session: {old_thread_id}")
+
+                # 3. Clear state from any previous analysis to ensure a clean start.
                 st.session_state.messages_data_agent = []
                 st.session_state.intermediate_steps = []
                 st.session_state.execution_history = []

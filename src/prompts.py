@@ -23,26 +23,36 @@ class Prompts:
 
     @staticmethod
     def generate_pandas_agent_system_prompt(user_query, datasets_text, dataset_variables):
-        # Keep this as is - it's unique for DataFrame operations
-        prompt = (
+        """
+        Generates the system prompt for the new, more powerful DataFrameAgent.
+        This agent is built with create_openai_tools_agent and has a restricted toolset.
+        """
+        return (
+            f"You are a highly skilled data analysis agent. Your purpose is to perform data manipulation, statistical analysis, and answer questions by writing and executing Python code. You are NOT a visualization agent; your focus is on computation and returning text-based results.\n\n"
+            
+            f"**CRITICAL CONSTRAINT: You have access to ONLY TWO TOOLS:**\n"
+            f"1. `list_plotting_data_files`: Use this FIRST to see all available files in the environment. This is crucial for knowing what to load.\n"
+            f"2. `Python_REPL`: Your primary tool for all data analysis. Use it to execute Python code to load files, manipulate data, and calculate results.\n\n"
+            
+            f"**IMPORTANT: If you are asked to create a plot or visualization, you MUST respond by stating that you are a data analysis agent and cannot create plots. Do not attempt to write plotting code.**\n\n"
+            
+            f"**CRITICAL PATH INSTRUCTION**: Always use the exact path variables provided below to access files.\n"
+            f"**REQUIREMENT**: Never modify paths or UUIDs. Copy and paste them exactly as shown.\n\n"
+            
             f"The dataset info is:\n{datasets_text}\n"
-            f"**Important Note**: Dataset names start from dataset_1, dataset_2, etc.\n"
-            f"**Essential Workflow**: Always use the Python REPL tool when processing user requests.\n"
-            f"The datasets are already loaded and available in your environment. Use the datasets directly for analysis.\n"
-            f"Don't recreate the dataset based on the headers; you are only given the headers for initial checks. Use dataset_1, dataset_2, etc., directly.\n"
-            f"The datasets are accessible via variables: {', '.join(dataset_variables)}.\n"
-            f"### Dataset Types:\n"
-            f"The type of each dataset is specified in the dataset info above. Note:\n"
-            f"- This agent is designed for pandas DataFrames. If a dataset is not a DataFrame (e.g., xarray Dataset), you must convert it to a DataFrame before analysis or return a message indicating that this agent cannot process it.\n"
-            f"- Use dataset.to_dataframe() for xarray Datasets if conversion is feasible.\n"
-            "Please help complete the task using the appropriate datasets. "
-            "Please respond as a polite PangaeaGPT agent and keep in mind that you are responding to a user. "
-            "Provide thorough, expert-level analysis with the depth and accuracy expected of a scientific publication.\n"
-            "Use the following schema in your response:\n"
-            "Analysis: ...\n"
-            "Further questions: ...\n"
+            
+            f"### HOW TO ACCESS DATASET FILES - ESSENTIAL STEPS:\n"
+            f"1. Call `list_plotting_data_files` to get a complete list of all accessible files.\n"
+            f"2. Each dataset has a path variable (e.g., `dataset_1_path`). Use this with `os.path.join()` and the exact filename you found in step 1.\n"
+            f"3. Load the data into pandas DataFrames or xarray Datasets using your `Python_REPL` tool.\n\n"
+            
+            f"### CORE WORKFLOW:\n"
+            f"1. Understand the user's data analysis query.\n"
+            f"2. Use `list_plotting_data_files` to identify the correct file path(s).\n"
+            f"3. Write Python code to load the data, perform the required analysis (filtering, statistics, counting, etc.).\n"
+            f"4. Execute your code using the `Python_REPL` tool.\n"
+            f"5. Provide a clear, text-based answer based on the output of your code. Your final answer should be a summary of your findings, not the raw code output.\n"
         )
-        return prompt
 
     @staticmethod
     def _get_base_visualization_prompt(datasets_text, dataset_variables):
@@ -106,7 +116,7 @@ class Prompts:
                 f"   - You need expert guidance on advanced visualization techniques\n"
                 f"   ⚠️ DO NOT use wise_agent for routine tasks or simple visualizations!\n"
             f"3. **Python_REPL**: Use this to execute Python code for data analysis and visualization.\n"
-            f"   - **IMPORTANT**: The Python environment resets between calls. Use a SINGLE code block for multi-step operations.\n"
+            f"   - **IMPORTANT**: The Python environment is PERSISTENT within a task. Imports, functions, and variables are REMEMBERED between calls.\n"
             f"4. **reflect_on_image**: Use this after generating a plot to get feedback and improve.\n"
             f"5. **install_package**: Only use if Python_REPL reports a missing package.\n"
             f"6. **list_plotting_data_files**: Lists all files under data/plotting_data directory.\n"
@@ -180,20 +190,13 @@ class Prompts:
         base = Prompts._get_base_visualization_prompt(datasets_text, dataset_variables)
         intro = ""
         
-        tools = Prompts._get_visualization_tools_section(include_era5_copernicus=True)
-        
-        era5_copernicus_section = (
-            f"\n### When to use ERA5 vs Copernicus Marine Data:\n"
-            f"- Use **ERA5** for atmospheric data: temperature, precipitation, wind, humidity, pressure\n"
-            f"- Use **Copernicus Marine** for ocean data: sea temperature, salinity, currents, sea level, chlorophyll\n"
-            f"- Copernicus Marine offers higher resolution for ocean-specific variables\n"
-        )
+        tools = Prompts._get_visualization_tools_section(include_era5_copernicus=False)
         
         workflow = Prompts._get_visualization_workflow_section()
         results = Prompts._get_results_directory_section(['sampling_stations_map.png', 'depth_distribution.png'])
         final = Prompts._get_final_instructions()
         
-        return intro + " " + base + tools + era5_copernicus_section + workflow + results + final
+        return intro + " " + base + tools + workflow + results + final
 
     @staticmethod
     def generate_oceanographer_agent_system_prompt(user_query, datasets_text, dataset_variables):
