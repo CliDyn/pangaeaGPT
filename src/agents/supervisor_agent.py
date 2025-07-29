@@ -77,9 +77,26 @@ def create_supervisor_agent(user_query, datasets_info, memory):
     else:
         datasets_text = "No datasets available."
 
-    # Define the updated supervisor system prompt
     system_prompt_supervisor = f"""
-You are a supervisor managing conversations and tasks. Your primary role is to efficiently handle user queries by either responding directly or delegating tasks to specialized agents.
+You are a supervisor managing conversations and tasks. Your primary role is to delegate tasks to the correct specialized agents.
+
+### 🚨 CRITICAL ROUTING RULES - NON-NEGOTIABLE 🚨
+
+1.  **NEVER, under any circumstances, route a visualization or plotting task to the `DataFrameAgent`.** This agent is incapable of creating plots and will reject the task. Any query containing words like 'plot', 'map', 'chart', 'figure', 'graph', 'visualize', or 'distribution' is a visualization task.
+
+2.  **ALWAYS route visualization tasks to `VisualizationAgent`, `OceanographerAgent`, or `EcologistAgent`.**
+
+3.  The `DataFrameAgent`'s ONLY purpose is for **non-visual computation**: calculating numbers, filtering tables, performing statistical analysis, and returning text or numerical results.
+
+### Available Agents and Their Strict Capabilities
+- **OceanographerAgent / EcologistAgent / VisualizationAgent**: Your agents for ALL VISUAL tasks. They create plots, maps, and figures.
+- **DataFrameAgent**: Your agent for ALL COMPUTATIONAL tasks. It performs calculations and data manipulation. **IT DOES NOT PLOT.**
+
+### Examples of Correct Routing:
+- "Plot the depth distribution" -> **"VisualizationAgent"**
+- "Calculate statistics for the depth distribution" -> **"DataFrameAgent"**
+- "Create a scatter plot of temperature vs salinity" -> **"OceanographerAgent"**
+- "What is the correlation between temperature and salinity?" -> **"DataFrameAgent"**
 
 ### CRITICAL ROUTING INSTRUCTIONS
 Your ONLY options for the "next" field are:
@@ -94,7 +111,7 @@ Before routing any task, examine the dataset information below to understand the
 {datasets_text}
 
 **MANDATORY DATA TYPE ROUTING RULES:**
-- **NetCDF/xarray Datasets (.nc, .cdf, .netcdf files)**: For VISUALIZATION, route to OceanographerAgent, EcologistAgent, or VisualizationAgent. For pure DATA ANALYSIS (e.g., calculating statistics from the file), you can route to DataFrameAgent.
+- **NetCDF/xarray Datasets (.nc, .cdf, .netcdf files)**: NEVER assign to DataFrameAgent. Use OceanographerAgent, EcologistAgent, or VisualizationAgent.
 - **pandas DataFrames (.csv files, data.csv)**: Can be routed to any agent. DataFrameAgent is the specialist for non-visual analysis.
 - **File folders with unknown formats**: Route to VisualizationAgent for initial exploration.
 - **Failed datasets**: Route to RESPOND to explain the issue.
@@ -115,8 +132,7 @@ For visualization and data analysis requests (like plotting, data manipulation, 
 4. Choose the appropriate agent from: {', '.join(members)}
 5. Set "next" ONLY to one of the agent names or "FINISH" or "RESPOND"
 
-### Available Agents and Their Capabilities
-{', '.join(members)}
+### Agent Capabilities Details
 - **OceanographerAgent**: Use for marine/ocean data visualization, climate analysis, physical oceanography, and when working with ERA5 or Copernicus Marine data. Specializes in temperature, salinity, currents, sea level data. **CAN HANDLE NetCDF/xarray datasets**.
 - **EcologistAgent**: Use for biodiversity data visualization, species analysis, ecological patterns, and biological/environmental studies. Does NOT have access to ERA5/Copernicus Marine tools. **CAN HANDLE NetCDF/xarray datasets**.
 - **VisualizationAgent**: Use for MAPPING tasks, geographic plots, sampling station maps, and general plotting/visualization tasks. ALWAYS route queries containing "map", "plot", "geographic", "station locations", "sampling stations" here. **CAN HANDLE NetCDF/xarray datasets**.
@@ -211,7 +227,7 @@ For visualization and data analysis requests (like plotting, data manipulation, 
         if "iteration_count" not in state:
             state["iteration_count"] = 0
         state["iteration_count"] += 1
-        if state["iteration_count"] > 10:
+        if state["iteration_count"] > 50:
             logging.error("Max iterations reached. Forcing FINISH.")
             state["next"] = "FINISH"
             state["messages"].append(AIMessage(content="Error: Maximum workflow iterations reached. Aborting.", name="Supervisor"))
@@ -660,7 +676,7 @@ def create_and_invoke_supervisor_agent(user_query: str, datasets_info: list, mem
         else:
             messages.append(AIMessage(content=message["content"], name=message["role"]))
 
-    limited_messages = messages[-15:]
+    limited_messages = messages[-10:]
     initial_state = {
         "messages": limited_messages,
         "next": "supervisor",
@@ -672,7 +688,7 @@ def create_and_invoke_supervisor_agent(user_query: str, datasets_info: list, mem
     }
 
     config = {
-        "configurable": {"thread_id": session_data.get('thread_id', str(uuid.uuid4())), "recursion_limit": 5}
+        "configurable": {"thread_id": session_data.get('thread_id', str(uuid.uuid4())), "recursion_limit": 7}
     }
     if st_callback:
         config["callbacks"] = [st_callback]

@@ -137,26 +137,32 @@ class WiseAgentToolArgs(BaseModel):
 
 def wise_agent(query: str) -> str:
     """
-    A tool that uses Anthropic's Claude 3.7 Sonnet model to provide visualization advice.
+    A tool that provides visualization advice using either OpenAI or Anthropic models.
     
     Args:
-        query: The query about visualization to send to Claude
+        query: The query about visualization to send to the AI model
         
     Returns:
-        str: Claude's advice on visualization
+        str: AI's advice on visualization
     """
     import streamlit as st
     import logging
+    import yaml
+    import os
     
-    # Get Anthropic API key from secrets
-    try:
-        anthropic_api_key = st.secrets["general"]["anthropic_api_key"]
-        logging.info("Successfully retrieved Anthropic API key from secrets")
-    except KeyError:
-        logging.error("Anthropic API key not found in .streamlit/secrets.toml")
-        return "Error: Anthropic API key not found in .streamlit/secrets.toml. Please add it to use WISE_AGENT."
+    # Load configuration
+    config_path = os.path.join(os.getcwd(), "config.yaml")
+    if os.path.exists(config_path):
+        with open(config_path, "r") as f:
+            app_config = yaml.safe_load(f)
+    else:
+        app_config = {}
     
-    # Get dataset information from viz_datasets_text in session state (set by create_visualization_agent)
+    # Get wise agent configuration
+    wise_agent_config = app_config.get("wise_agent", {})
+    provider = wise_agent_config.get("provider", "openai")  # Default to OpenAI
+    
+    # Get dataset information from session state
     datasets_text = st.session_state.get("viz_datasets_text", "")
     
     if not datasets_text:
@@ -189,7 +195,7 @@ def wise_agent(query: str) -> str:
         logging.error(f"Error retrieving available files: {str(e)}")
         available_files = f"Error retrieving available files: {str(e)}"
     
-    # Create the system prompt for Claude
+    # Create the system prompt
     system_prompt = """You are WISE_AGENT, a scientific visualization expert specializing in data visualization for research datasets.
 
 Your role is to provide specific, actionable advice on how to create the most effective visualizations for scientific data.
@@ -223,16 +229,47 @@ Please provide visualization advice based on this information.
 """
     
     try:
-        # Initialize the ChatAnthropic client with the specified model
-        llm = ChatAnthropic(
-            model="claude-3-7-sonnet-20250219",
-            anthropic_api_key=anthropic_api_key,
-            temperature=0.2,  # Low temperature for more precise advice
-        )
+        if provider.lower() == "anthropic":
+            # Use Anthropic's Claude
+            try:
+                anthropic_api_key = st.secrets["general"]["anthropic_api_key"]
+                logging.info("Using Anthropic Claude for wise_agent")
+            except KeyError:
+                logging.error("Anthropic API key not found in .streamlit/secrets.toml")
+                return "Error: Anthropic API key not found in .streamlit/secrets.toml. Please add it to use WISE_AGENT with Claude."
+            
+            anthropic_model = wise_agent_config.get("anthropic_model", "claude-3-7-sonnet-20250219")
+            
+            from langchain_anthropic import ChatAnthropic
+            llm = ChatAnthropic(
+                model=anthropic_model,
+                anthropic_api_key=anthropic_api_key,
+                temperature=0.2,
+            )
+            
+            logging.info(f"Making request to Claude model: {anthropic_model}")
+            
+        else:  # Default to OpenAI
+            # Use OpenAI
+            from ..llm_factory import get_llm
+            from ..config import API_KEY
+            
+            logging.info("Using OpenAI for wise_agent")
+            
+            # Get the specific model from config
+            openai_model = wise_agent_config.get("openai_model", "gpt-4-turbo-preview")
+            
+            # Use the factory to get the LLM, but with our specific model
+            from langchain_openai import ChatOpenAI
+            llm = ChatOpenAI(
+                api_key=API_KEY,
+                model_name=openai_model,
+                temperature=0.2
+            )
+            
+            logging.info(f"Making request to OpenAI model: {openai_model}")
         
-        logging.info("Making request to Claude 3.7 Sonnet model with enhanced context")
-        
-        # Generate the response with the enhanced query
+        # Generate the response
         response = llm.invoke(
             [
                 {"role": "system", "content": system_prompt},
@@ -240,16 +277,17 @@ Please provide visualization advice based on this information.
             ]
         )
         
-        logging.info("Successfully received response from Claude")
+        logging.info("Successfully received response from AI model")
         return response.content
+        
     except Exception as e:
-        logging.error(f"Error using ChatAnthropic: {str(e)}")
+        logging.error(f"Error using WISE_AGENT: {str(e)}")
         return f"Error using WISE_AGENT: {str(e)}"
 
 # Create the wise agent tool
 wise_agent_tool = StructuredTool.from_function(
     func=wise_agent,
     name="wise_agent",
-    description="A tool that provides expert visualization advice using Anthropic's Claude 3.7 Sonnet model. Use this tool FIRST when planning complex visualizations or when you need guidance on best visualization practices for scientific data. Provide a detailed description of the data structure and visualization goals.",
+    description="A tool that provides expert visualization advice using advanced AI models. Use this tool FIRST when planning complex visualizations or when you need guidance on best visualization practices for scientific data. Provide a detailed description of the data structure and visualization goals.",
     args_schema=WiseAgentToolArgs
 )

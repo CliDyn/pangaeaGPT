@@ -1,13 +1,12 @@
 # src/tools/parallel_search_tool.py
 """
-Enhanced Parallel PANGAEA Search Tool with Full Metadata Preservation
-NOW WITH INTELLIGENT METADATA EXTRACTION AND CONSOLIDATION!
+Enhanced Sequential PANGAEA Search Tool with Full Metadata Preservation
+NOW WITH RATE LIMIT PROTECTION - NO MORE KICKS!
 """
 
 import logging
 import time
 import streamlit as st
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 from dataclasses import dataclass
@@ -17,7 +16,7 @@ from ..search.search_pg_default import pg_search_default
 
 
 class ParallelSearchArgs(BaseModel):
-    search_queries: List[str] = Field(description="List of SEARCH QUERY STRINGS (NOT DOIs, NOT full text) to execute in parallel. Example: ['temperature data', 'salinity measurements', 'arctic ocean CTD']")
+    search_queries: List[str] = Field(description="List of SEARCH QUERY STRINGS (NOT DOIs, NOT full text) to execute sequentially. Example: ['temperature data', 'salinity measurements', 'arctic ocean CTD']")
     count_per_query: Optional[int] = Field(default=30, description="Number of results per query (5-50)")
     mindate: Optional[str] = Field(default=None, description="Minimum date in 'YYYY-MM-DD' format")
     maxdate: Optional[str] = Field(default=None, description="Maximum date in 'YYYY-MM-DD' format")
@@ -38,14 +37,14 @@ class SearchResult:
     error: Optional[str] = None
 
 
-class EnhancedParallelSearchExecutor:
+class EnhancedSequentialSearchExecutor:
     """
-    Enhanced parallel search executor that preserves ALL metadata during parallel execution.
-    NOW WITH INTELLIGENT METADATA-BASED CONSOLIDATION!
+    Enhanced SEQUENTIAL search executor with RATE LIMIT PROTECTION.
+    NOW WITH DELAYS TO PREVENT GETTING KICKED!
     """
     
-    def __init__(self, max_workers: int = 4):
-        self.max_workers = min(max_workers, 5)  # Limit to prevent overwhelming PANGAEA
+    def __init__(self, delay_between_searches: float = 20.0):
+        self.delay_between_searches = delay_between_searches  # 3 seconds delay by default
         
     def execute_single_search_with_metadata(self, query: str, count: int = 30, **search_params) -> SearchResult:
         """
@@ -55,7 +54,7 @@ class EnhancedParallelSearchExecutor:
         start_time = time.time()
         
         try:
-            logging.info(f"🔍 Executing parallel search: '{query}' (count={count})")
+            logging.info(f"🔍 Executing search: '{query}' (count={count})")
             
             # Execute the search using the existing function that extracts ALL metadata
             datasets_df = pg_search_default(
@@ -94,17 +93,18 @@ class EnhancedParallelSearchExecutor:
                 error=str(e)
             )
     
-    def execute_parallel_searches_with_metadata(self, queries: List[str], count_per_query: int = 30, 
-                                              **search_params) -> List[SearchResult]:
+    def execute_sequential_searches_with_metadata(self, queries: List[str], count_per_query: int = 30, 
+                                                 **search_params) -> List[SearchResult]:
         """
-        Execute multiple searches in parallel, preserving ALL metadata from each search.
+        Execute multiple searches SEQUENTIALLY with DELAYS, preserving ALL metadata from each search.
+        NO MORE PARALLEL EXECUTION - RATE LIMIT SAFE!
         """
         if not queries:
             return []
         
-        logging.info(f"🚀 Starting parallel execution of {len(queries)} searches with metadata preservation")
+        logging.info(f"🚀 Starting SEQUENTIAL execution of {len(queries)} searches with {self.delay_between_searches}s delay between each")
         
-        # Initialize progress tracking (no threading needed)
+        # Initialize progress tracking
         if hasattr(st, 'session_state') and 'parallel_search_progress' in st.session_state:
             st.session_state.parallel_search_progress.update({
                 'total_queries': len(queries),
@@ -116,55 +116,45 @@ class EnhancedParallelSearchExecutor:
         
         search_results = []
         
-        # Use ThreadPoolExecutor for parallel execution
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # Submit all searches
-            future_to_query = {
-                executor.submit(
-                    self.execute_single_search_with_metadata, 
-                    query, count_per_query, **search_params
-                ): query
-                for query in queries
-            }
+        # SEQUENTIAL EXECUTION WITH DELAYS
+        for i, query in enumerate(queries):
+            logging.info(f"📍 Processing query {i+1}/{len(queries)}: '{query}'")
             
-            # Process completed searches as they finish
-            for future in as_completed(future_to_query):
-                query = future_to_query[future]
+            # Update progress
+            if hasattr(st, 'session_state') and 'parallel_search_progress' in st.session_state:
+                st.session_state.parallel_search_progress['current_query'] = query
+            
+            # Execute the search
+            result = self.execute_single_search_with_metadata(
+                query, count_per_query, **search_params
+            )
+            
+            search_results.append(result)
+            
+            # Update progress tracking
+            if hasattr(st, 'session_state') and 'parallel_search_progress' in st.session_state:
+                st.session_state.parallel_search_progress['completed_queries'] = i + 1
                 
-                try:
-                    result = future.result()
-                    search_results.append(result)
-                    
-                    # Simple progress update (no threading conflicts)
-                    if hasattr(st, 'session_state') and 'parallel_search_progress' in st.session_state:
-                        st.session_state.parallel_search_progress['completed_queries'] += 1
-                        st.session_state.parallel_search_progress['current_query'] = query
-                        
-                        # Add result summary for final display
-                        result_summary = {
-                            'query': query,
-                            'success': result.success,
-                            'count': len(result.datasets_df),
-                            'execution_time': result.execution_time
-                        }
-                        st.session_state.parallel_search_progress['results'].append(result_summary)
-                    
-                    if result.success:
-                        logging.info(f"📊 Query '{query}': {len(result.datasets_df)} datasets with metadata extracted")
-                    else:
-                        logging.warning(f"⚠️ Query '{query}' failed: {result.error}")
-                        
-                except Exception as e:
-                    logging.error(f"❌ Error processing result for '{query}': {str(e)}")
-                    search_results.append(SearchResult(
-                        query=query,
-                        datasets_df=pd.DataFrame(),
-                        execution_time=0,
-                        success=False,
-                        error=str(e)
-                    ))
+                # Add result summary for final display
+                result_summary = {
+                    'query': query,
+                    'success': result.success,
+                    'count': len(result.datasets_df),
+                    'execution_time': result.execution_time
+                }
+                st.session_state.parallel_search_progress['results'].append(result_summary)
+            
+            if result.success:
+                logging.info(f"📊 Query '{query}': {len(result.datasets_df)} datasets with metadata extracted")
+            else:
+                logging.warning(f"⚠️ Query '{query}' failed: {result.error}")
+            
+            # CRITICAL: ADD DELAY BETWEEN SEARCHES (except after the last one)
+            if i < len(queries) - 1:
+                logging.info(f"⏳ Waiting {self.delay_between_searches}s before next search to avoid rate limits...")
+                time.sleep(self.delay_between_searches)
         
-        logging.info(f"🏁 Parallel search completed: {sum(1 for r in search_results if r.success)}/{len(queries)} successful")
+        logging.info(f"🏁 Sequential search completed: {sum(1 for r in search_results if r.success)}/{len(queries)} successful")
         return search_results
 
 
@@ -173,8 +163,8 @@ def parallel_search_pangaea(search_queries: List[str], count_per_query: int = 30
                           minlat: Optional[float] = None, maxlat: Optional[float] = None,
                           minlon: Optional[float] = None, maxlon: Optional[float] = None) -> Dict[str, Any]:
     """
-    Enhanced parallel search function that executes multiple PANGAEA searches concurrently
-    while preserving ALL metadata for intelligent consolidation.
+    Enhanced SEQUENTIAL search function that executes multiple PANGAEA searches ONE BY ONE
+    with DELAYS to prevent rate limiting, while preserving ALL metadata for intelligent consolidation.
     
     Returns:
         Dict containing:
@@ -202,7 +192,7 @@ def parallel_search_pangaea(search_queries: List[str], count_per_query: int = 30
     
     # Handle single query case efficiently
     if len(search_queries) == 1:
-        executor = EnhancedParallelSearchExecutor(max_workers=1)
+        executor = EnhancedSequentialSearchExecutor(delay_between_searches=0)  # No delay for single query
         result = executor.execute_single_search_with_metadata(
             search_queries[0], count_per_query,
             mindate=mindate, maxdate=maxdate,
@@ -253,11 +243,16 @@ def parallel_search_pangaea(search_queries: List[str], count_per_query: int = 30
             'message': f"Single search completed: {len(all_datasets)} datasets found with metadata"
         }
     
-    # Multiple queries - use parallel execution with metadata preservation
+    # Multiple queries - use SEQUENTIAL execution with DELAYS
     start_time = time.time()
-    executor = EnhancedParallelSearchExecutor(max_workers=4)
+    executor = EnhancedSequentialSearchExecutor(delay_between_searches=3.0)  # 3 second delay between searches
     
-    search_results = executor.execute_parallel_searches_with_metadata(
+    # Limit to maximum 5 queries to prevent excessive requests
+    if len(search_queries) > 5:
+        logging.warning(f"⚠️ Limiting search to first 5 queries (from {len(search_queries)}) to prevent rate limiting")
+        search_queries = search_queries[:5]
+    
+    search_results = executor.execute_sequential_searches_with_metadata(
         search_queries, count_per_query,
         mindate=mindate, maxdate=maxdate,
         minlat=minlat, maxlat=maxlat,
@@ -306,11 +301,6 @@ def parallel_search_pangaea(search_queries: List[str], count_per_query: int = 30
     successful_queries = sum(1 for r in search_results if r.success)
     avg_score = sum(d['Score'] for d in all_datasets) / len(all_datasets) if all_datasets else 0
     
-    # Estimate speedup (approximate)
-    individual_times = [r.execution_time for r in search_results]
-    sequential_estimate = sum(individual_times)
-    speedup = sequential_estimate / max(total_execution_time, 0.1)
-    
     execution_stats = {
         'total_queries': len(search_queries),
         'successful_queries': successful_queries,
@@ -318,16 +308,17 @@ def parallel_search_pangaea(search_queries: List[str], count_per_query: int = 30
         'unique_dois': len(all_dois),
         'total_execution_time': total_execution_time,
         'avg_execution_time_per_query': total_execution_time / len(search_queries),
-        'estimated_speedup': f"{speedup:.1f}x",
+        'search_mode': 'SEQUENTIAL (Rate-limit safe)',
+        'delay_used': '3 seconds between searches',
         'avg_score': avg_score,
         'top_score': all_datasets[0]['Score'] if all_datasets else 0,
         'score_range': f"{min(d['Score'] for d in all_datasets):.1f}-{max(d['Score'] for d in all_datasets):.1f}" if all_datasets else "N/A"
     }
     
     logging.info(
-        f"🎯 Enhanced parallel search completed: {successful_queries}/{len(search_queries)} successful, "
+        f"🎯 Sequential search completed: {successful_queries}/{len(search_queries)} successful, "
         f"{len(all_dois)} unique DOIs, avg score: {avg_score:.1f}, "
-        f"time: {total_execution_time:.1f}s ({speedup:.1f}x speedup)"
+        f"time: {total_execution_time:.1f}s (with rate limit protection)"
     )
     
     return {
@@ -335,7 +326,7 @@ def parallel_search_pangaea(search_queries: List[str], count_per_query: int = 30
         'all_dois': list(all_dois),    # Simple DOI list for backward compatibility
         'search_results': query_summaries,
         'execution_stats': execution_stats,
-        'message': f"🚀 Enhanced parallel search completed: {successful_queries}/{len(search_queries)} queries successful, "
+        'message': f"🛡️ Rate-limit safe sequential search completed: {successful_queries}/{len(search_queries)} queries successful, "
                   f"{len(all_dois)} unique DOIs with full metadata extracted "
-                  f"(avg score: {avg_score:.1f}, {speedup:.1f}x speedup)"
+                  f"(avg score: {avg_score:.1f}, with 3s delays between searches)"
     }

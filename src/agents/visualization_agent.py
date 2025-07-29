@@ -80,69 +80,24 @@ def create_visualization_agent(user_query, datasets_info):
         datasets[var_name] = info['dataset']
         dataset_variables.append(var_name)
         
-        # Add the FULL UUID PATH for each dataset
-        if isinstance(info['dataset'], str) and os.path.isdir(info['dataset']):
-            full_uuid_path = os.path.abspath(info['dataset']).replace('\\', '/')
+        # We use 'sandbox_path', which is always a string, not the DataFrame object itself
+        sandbox_path = info.get('sandbox_path')
+        
+        # Now the logic is unified: we ALWAYS provide a path, even if the data is already in memory
+        if sandbox_path and isinstance(sandbox_path, str) and os.path.isdir(sandbox_path):
+            full_uuid_path = os.path.abspath(sandbox_path).replace('\\', '/')
             
             uuid_paths += f"# Dataset {i+1}: {info['name']}\n"
+            uuid_paths += f"# This dataset is located in a directory. Use the path variable below.\n"
             uuid_paths += f"{var_name}_path = r'{full_uuid_path}'\n\n"
             
             if os.path.exists(full_uuid_path):
                 try:
                     files = os.listdir(full_uuid_path)
-                    uuid_paths += f"# Files available in {var_name}_path:\n"
-                    uuid_paths += f"# {', '.join(files)}\n\n"
-                    
-                    # Add dataset-specific examples
-                    uuid_paths += f"# DATASET-SPECIFIC WORKING CODE EXAMPLES FOR {var_name}:\n"
-                    
-                    # Example for listing files
-                    uuid_paths += f"# Example: List all files in {var_name}_path\n"
-                    uuid_paths += f"import os\n"
-                    uuid_paths += f"files = os.listdir({var_name}_path)\n"
-                    uuid_paths += f"print(f\"Files in {var_name}:\")\n"
-                    uuid_paths += f"for file in files:\n"
-                    uuid_paths += f"    print(f\"  - {{file}}\")\n\n"
-                    
-                    # Add file-specific examples
-                    if any(f.endswith('.csv') for f in files):
-                        csv_file = next(f for f in files if f.endswith('.csv'))
-                        uuid_paths += f"# Example: Load CSV file '{csv_file}' from {var_name}_path\n"
-                        uuid_paths += f"import pandas as pd\n"
-                        uuid_paths += f"csv_path = os.path.join({var_name}_path, '{csv_file}')\n"
-                        uuid_paths += f"df = pd.read_csv(csv_path)\n"
-                        uuid_paths += f"print(df.head())\n\n"
-                    
-                    if any(f.endswith(('.nc', '.cdf', '.netcdf')) for f in files):
-                        nc_file = next(f for f in files if f.endswith(('.nc', '.cdf', '.netcdf')))
-                        uuid_paths += f"# Example: Load netCDF file '{nc_file}' from {var_name}_path\n"
-                        uuid_paths += f"import xarray as xr\n"
-                        uuid_paths += f"nc_path = os.path.join({var_name}_path, '{nc_file}')\n"
-                        uuid_paths += f"ds = xr.open_dataset(nc_path)\n"
-                        uuid_paths += f"print(ds)\n\n"
-                    
-                    # Plotting example using results_dir
-                    if any(f.endswith('.csv') for f in files):
-                        csv_file = next(f for f in files if f.endswith('.csv'))
-                        uuid_paths += f"# Example: Create plot using data from {var_name}_path\n"
-                        uuid_paths += f"import pandas as pd\n"
-                        uuid_paths += f"import matplotlib.pyplot as plt\n"
-                        uuid_paths += f"csv_path = os.path.join({var_name}_path, '{csv_file}')\n"
-                        uuid_paths += f"df = pd.read_csv(csv_path)\n"
-                        uuid_paths += f"plt.figure(figsize=(10, 6))\n"
-                        uuid_paths += f"# Replace 'column_name' with an actual column from your data\n"
-                        uuid_paths += f"plt.plot(df.index, df.iloc[:, 0])\n"
-                        uuid_paths += f"plt.title('Data from {info['name']}')\n"
-                        uuid_paths += f"# Save to results directory with descriptive name\n"
-                        uuid_paths += f"plt.savefig(os.path.join(results_dir, 'my_plot.png'))\n\n"
-                    
+                    uuid_paths += f"# Files available in {var_name}_path: {', '.join(files)}\n\n"
                 except Exception as e:
                     uuid_paths += f"# Error listing files: {str(e)}\n\n"
-            
-            uuid_paths += f"# ⚠️ WARNING: ALWAYS USE THE EXACT PATH WITH os.path.join({var_name}_path, 'filename')! ⚠️\n\n"
-        else:
-            uuid_paths += f"# Dataset {i+1}: {info['name']} (in-memory dataset, not a directory)\n"
-            uuid_paths += f"# Access this dataset directly with the variable name '{var_name}'\n\n"
+        # THE 'ELSE' BLOCK IS COMPLETELY REMOVED. The contradiction is eliminated.
     
     # Global warning about path handling
     uuid_paths += "# ⚠️ CRITICAL WARNINGS ⚠️\n"
@@ -152,10 +107,10 @@ def create_visualization_agent(user_query, datasets_info):
     
     # Continue with standard dataset info
     for i, info in enumerate(datasets_info):
-        var_name = f"dataset_{i + 1}"
+        #var_name = f"dataset_{i + 1}"
         datasets_text += (
             f"Dataset {i + 1}:\n"
-            f"Variable Name: {var_name}\n"
+            #f"Variable Name: {var_name}\n"
             f"Name: {info['name']}\n"
             f"Description: {info['description']}\n"
             f"Type: {info['data_type']}\n"
@@ -182,7 +137,7 @@ def create_visualization_agent(user_query, datasets_info):
         repl_tool,
         reflect_tool,
         install_package_tool,
-        example_visualization_tool,
+        #example_visualization_tool,
         list_plotting_data_files_tool,
         wise_agent_tool
         # era5_retrieval_tool,  # Disabled for VisualizationAgent
@@ -210,7 +165,8 @@ def create_visualization_agent(user_query, datasets_info):
         tools=tools_vis,
         verbose=True,
         handle_parsing_errors=True,
-        return_intermediate_steps=True
+        return_intermediate_steps=True,
+        max_iterations=25
     )
 
 def initialize_agents(user_query, datasets_info):

@@ -23,15 +23,17 @@ class PersistentREPL:
     """
     Manages a single long-lived interactive Python process.
     """
-    def __init__(self):
+    def __init__(self, working_dir=None):
+        self._working_dir = working_dir  # Store for restart purposes
         self._process = subprocess.Popen(
-            [sys.executable, "-i", "-q", "-u"],  # -u for unbuffered output
+            [sys.executable, "-i", "-q", "-u"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             encoding='utf-8',
-            errors='replace'
+            errors='replace',
+            cwd=working_dir  # Start the subprocess in the specified directory
         )
         self._end_marker = f"---END_OF_OUTPUT_{os.urandom(8).hex()}---"
         self._output_queue = queue.Queue()
@@ -53,19 +55,24 @@ class PersistentREPL:
             q.put(line)
         pipe.close()
 
-    def run(self, code: str, timeout: int = 60) -> str:
+    def run(self, code: str, timeout: int = 300) -> str:
         """Execute code in the persistent process."""
         # Clear queues before execution
-        while not self._output_queue.empty(): self._output_queue.get_nowait()
-        while not self._stderr_queue.empty(): self._stderr_queue.get_nowait()
+        while not self._output_queue.empty(): 
+            self._output_queue.get_nowait()
+        while not self._stderr_queue.empty(): 
+            self._stderr_queue.get_nowait()
 
-        command = f"{code}\nprint('{self._end_marker}')\n"
+        # Simply send the code directly followed by the end marker
+        # Add a newline before the end marker to ensure it's on its own line
+        command = f"{code}\n\nprint('{self._end_marker}')\n"
+        
         try:
             self._process.stdin.write(command)
             self._process.stdin.flush()
         except BrokenPipeError:
             logging.error("REPL process died. Attempting restart.")
-            self.__init__() # Restart the process
+            self.__init__(working_dir=self._working_dir)
             return "ERROR: The Python REPL process died and was restarted. Please try your command again."
 
         output_lines = []
@@ -104,11 +111,13 @@ class REPLManager:
     _lock = threading.Lock()
 
     @classmethod
-    def get_repl(cls, session_id: str) -> PersistentREPL:
+    def get_repl(cls, session_id: str, sandbox_path: str = None) -> PersistentREPL:
         with cls._lock:
             if session_id not in cls._instances:
                 logging.info(f"Creating new persistent REPL for session: {session_id}")
-                cls._instances[session_id] = PersistentREPL()
+                if sandbox_path:
+                    logging.info(f"Starting REPL in sandbox directory: {sandbox_path}")
+                cls._instances[session_id] = PersistentREPL(working_dir=sandbox_path)
             return cls._instances[session_id]
 
     @classmethod
@@ -130,13 +139,12 @@ class CustomPythonREPLTool(PythonREPLTool):
         self._datasets = datasets
 
     def _initialize_session(self, repl: PersistentREPL) -> None:
-        """Prepare the REPL session by importing libraries and injecting variables."""
-        logging.info("Initializing persistent REPL session...")
-
-        # 1. Basic imports
+        """Prepare the REPL session by importing libraries and auto-loading data."""
+        logging.info("Initializing persistent REPL session with auto-loading...")
+        
         initialization_code = [
             "import os",
-            "import sys",
+            "import sys", 
             "import pandas as pd",
             "import matplotlib.pyplot as plt",
             "import xarray as xr",
@@ -144,29 +152,26 @@ class CustomPythonREPLTool(PythonREPLTool):
             "from io import StringIO"
         ]
 
-        # 2. Inject variables
-        local_context = {}
-        local_context.update(self._datasets)
-        
-        sandbox_path = local_context.get("uuid_main_dir")
-        if sandbox_path:
-            results_dir = os.path.join(sandbox_path, 'results')
-            os.makedirs(results_dir, exist_ok=True)
-            initialization_code.append(f"results_dir = r'{results_dir.replace('\\', '/')}'")
-            logging.info(f"Injected variable results_dir: {results_dir}")
-        else:
-            logging.warning("uuid_main_dir not found, results_dir will not be defined.")
-
+        # Inject dataset variables by auto-loading from files
         for key, value in self._datasets.items():
-            if isinstance(value, str) and os.path.isdir(value):
+            if key.startswith('dataset_') and isinstance(value, str) and os.path.isdir(value):
+                # 1. Create the path variable (e.g., dataset_1_path)
                 path_var_name = f"{key}_path"
                 abs_path = os.path.abspath(value).replace('\\', '/')
                 initialization_code.append(f"{path_var_name} = r'{abs_path}'")
                 logging.info(f"Injected path variable {path_var_name} = {abs_path}")
-            # Note: We cannot directly inject large DataFrames,
-            # the agent will need to load them using the injected paths.
+                
+                # 2. Attempt to find and auto-load data.csv into the main variable (e.g., dataset_1)
+                csv_path = os.path.join(value, 'data.csv')
+                if os.path.exists(csv_path):
+                    initialization_code.append(f"# Auto-loading {key} from data.csv")
+                    initialization_code.append(f"try:")
+                    initialization_code.append(f"    {key} = pd.read_csv(os.path.join({path_var_name}, 'data.csv'))")
+                    initialization_code.append(f"    print(f'Successfully auto-loaded {{os.path.join({path_var_name}, \"data.csv\")}} into `{key}` variable.')")
+                    initialization_code.append(f"except Exception as e: print(f'Could not auto-load {key}: {{e}}')")
+                    logging.info(f"Added auto-loading code for {key} from {csv_path}")
 
-        # 3. Execute initialization code
+        # Execute all initialization code in one go
         full_init_code = "\n".join(initialization_code)
         logging.debug(f"REPL initialization code:\n{full_init_code}")
         result = repl.run(full_init_code)
@@ -183,11 +188,14 @@ class CustomPythonREPLTool(PythonREPLTool):
             return "ERROR: Session ID is missing. Cannot continue."
         
         session_id = st.session_state.thread_id
-        repl = REPLManager.get_repl(session_id)
+        # Get sandbox path from datasets
+        sandbox_path = self._datasets.get("uuid_main_dir")
+        repl = REPLManager.get_repl(session_id, sandbox_path=sandbox_path)
 
         # "Warm up" the REPL on first call in the session
         if not repl.is_initialized:
-            self._initialize_session(repl)
+            self._initialize_session(repl)  
+            repl.is_initialized = True      
 
         logging.info(f"Executing code in persistent REPL for session {session_id}:\n{query}")
         

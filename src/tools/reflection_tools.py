@@ -2,6 +2,7 @@
 import base64
 import os
 import logging
+import streamlit as st  # Import streamlit to access session state
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
 from openai import OpenAI
@@ -13,10 +14,33 @@ def encode_image(image_path):
         return base64.b64encode(image_file.read()).decode('utf-8')
 
 def reflect_on_image(image_path: str) -> str:
-    if not os.path.exists(image_path):
-        return f"Error: The file {image_path} does not exist."
+    """
+    Analyzes an image and provides feedback. Automatically resolves sandbox paths.
+    """
+    # --- NEW SANDBOX PATH RESOLUTION LOGIC ---
+    final_image_path = image_path
 
-    base64_image = encode_image(image_path)
+    # If the path is relative, resolve it against the current session's sandbox
+    if not os.path.isabs(image_path):
+        thread_id = st.session_state.get("thread_id")
+        if thread_id:
+            sandbox_dir = os.path.join("tmp", "sandbox", thread_id)
+            potential_path = os.path.join(sandbox_dir, image_path)
+            if os.path.exists(potential_path):
+                final_image_path = potential_path
+                logging.info(f"Resolved relative path '{image_path}' to sandbox path '{final_image_path}'")
+            else:
+                logging.warning(f"Could not resolve relative path '{image_path}' in sandbox '{sandbox_dir}'")
+        else:
+            logging.warning("Could not resolve relative path: No thread_id in session state.")
+    # --- END OF NEW LOGIC ---
+
+    if not os.path.exists(final_image_path):
+        # Provide a more informative error message
+        return (f"Error: The file '{final_image_path}' (resolved from '{image_path}') does not exist. "
+                f"This often happens if the file was not saved correctly or if there is a path mismatch between the agent's environment and the tool's environment.")
+
+    base64_image = encode_image(final_image_path)
 
     prompt = """You are a STRICT professional reviewer of scientific images. Your task is to provide critical feedback to the visual creator agent so they can improve their visualization. Be particularly harsh on basic readability issues. Evaluate the provided image using the following criteria:
 

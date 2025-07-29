@@ -106,5 +106,6 @@ def create_pandas_agent(user_query, datasets_info):
         tools=tools,
         verbose=True,
         handle_parsing_errors=True,
-        return_intermediate_steps=True
+        return_intermediate_steps=True,
+        max_iterations=25
     )

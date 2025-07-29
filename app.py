@@ -315,6 +315,20 @@ if st.session_state.current_page == "search":
                                 st.session_state.selected_datasets.discard(row['DOI'])
                 else:
                     # For final results, display normally (visible by default)
+                    # Add select all checkbox at the top
+                    cols = st.columns([1, 2, 2, 4, 2, 1])
+                    with cols[5]:
+                        all_dois_in_table = set(df['DOI'].tolist())
+                        all_selected = all_dois_in_table.issubset(st.session_state.selected_datasets)
+                        
+                        select_all = st.checkbox("Select All", key=f"select_all_{i}", value=all_selected)
+                        if select_all and not all_selected:
+                            st.session_state.selected_datasets.update(all_dois_in_table)
+                            st.rerun()
+                        elif not select_all and all_selected:
+                            st.session_state.selected_datasets -= all_dois_in_table
+                            st.rerun()
+                    
                     for index, row in df.iterrows():
                         cols = st.columns([1, 2, 2, 4, 2, 1])
                         cols[0].write(f"**#{row['Number']}**")
@@ -328,7 +342,7 @@ if st.session_state.current_page == "search":
                         cols[4].write(f"**Parameters:** {', '.join(parameters_list)}")
                         checkbox_key = f"select-final-{i}-{index}"
                         with cols[5]:
-                            selected = st.checkbox("Select", key=checkbox_key)
+                            selected = st.checkbox("Select", key=checkbox_key, value=row['DOI'] in st.session_state.selected_datasets)
                         if selected:
                             st.session_state.selected_datasets.add(row['DOI'])
                         else:
