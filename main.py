@@ -35,7 +35,11 @@ def initialize_session_state(session_state: dict):
         "dataset_names": {},
         "saved_plot_paths": {},
         "memory": MemorySaver(),
+        "oceanographer_agent_used": False,
+        "ecologist_agent_used": False,
         "visualization_agent_used": False,
+        "dataframe_agent_used": False,
+        "specialized_agent_used": False,
         "chat_history": ChatMessageHistory(session_id="search-agent-session"),
         "search_method": "PANGAEA Search (default)",
         "selected_text": "",
@@ -49,20 +53,30 @@ def initialize_session_state(session_state: dict):
 
 
 def get_search_agent(datasets_info, model_name, api_key):
-    return create_search_agent(datasets_info=datasets_info)
+    # Add search_mode parameter
+    search_mode = st.session_state.get("search_mode", "simple")
+    return create_search_agent(datasets_info=datasets_info, search_mode=search_mode)
 
 
 def process_search_query(user_input: str, search_agent, session_data: dict):
+    """
+    Processes a user search query using the enhanced multi-search agent.
+    """
+    # Initialize or reset chat history
     session_data["chat_history"] = ChatMessageHistory(session_id="search-agent-session")
+    
+    # Populate chat history
     for message in session_data["messages_search"]:
         if message["role"] == "user":
             session_data["chat_history"].add_user_message(message["content"])
         elif message["role"] == "assistant":
             session_data["chat_history"].add_ai_message(message["content"])
 
+    # Create truncated history function
     def get_truncated_chat_history(session_id):
         truncated_messages = session_data["chat_history"].messages[-20:]
         truncated_history = ChatMessageHistory(session_id=session_id)
+        
         for msg in truncated_messages:
             if isinstance(msg, HumanMessage):
                 truncated_history.add_user_message(msg.content)
@@ -70,8 +84,10 @@ def process_search_query(user_input: str, search_agent, session_data: dict):
                 truncated_history.add_ai_message(msg.content)
             else:
                 truncated_history.add_message(msg)
+                
         return truncated_history
 
+    # Create agent with memory
     search_agent_with_memory = RunnableWithMessageHistory(
         search_agent,
         get_truncated_chat_history,
@@ -79,12 +95,39 @@ def process_search_query(user_input: str, search_agent, session_data: dict):
         history_messages_key="chat_history",
     )
 
+    # Log the search execution
+    logging.info(f"Starting multi-search process for query: {user_input}")
+    
+    # Invoke agent
     response = search_agent_with_memory.invoke(
         {"input": user_input},
         {"configurable": {"session_id": "search-agent-session"}},
     )
 
+    # Extract response and intermediate steps
     ai_message = response["output"]
+    intermediate_steps = response.get("intermediate_steps", [])
+    
+    # Log search statistics
+    search_count = sum(1 for step in intermediate_steps if step[0].tool == "search_pg_datasets")
+    logging.info(f"Completed multi-search with {search_count} searches executed")
+    
+    # Check if consolidation was performed
+    consolidation_performed = any(step[0].tool == "consolidate_search_results" for step in intermediate_steps)
+    
+    if consolidation_performed and session_data.get("datasets_info") is not None:
+        # Add the final consolidated table to messages
+        if session_data.get("search_mode") == "deep":
+            message = f"**Deep search completed:** Executed {search_count} search variations and consolidated results."
+        else:
+            message = f"**Search completed:** Found {len(session_data['datasets_info'])} datasets."
+            
+        session_data["messages_search"].append({
+            "role": "assistant",
+            "content": message,
+            "table": session_data["datasets_info"].to_json(orient="split")
+        })
+    
     return ai_message
 
 
@@ -105,20 +148,29 @@ def load_selected_datasets_into_cache(selected_datasets, session_data: dict):
         session_data: Dictionary containing session state.
     """
     logging.info(f"Starting load_selected_datasets_into_cache for {len(selected_datasets)} datasets")
-    
-    # Create one main sandbox directory
-    sandbox_main = os.path.join("tmp", "sandbox", str(uuid.uuid4()))
+
+    # Get the persistent thread_id for the session. It must have been created before this.
+    thread_id = session_data.get("thread_id")
+    if not thread_id:
+        logging.error("CRITICAL: thread_id not found. Forcing creation of a new one.")
+        ensure_thread_id(session_data, force_new=True)
+        thread_id = session_data["thread_id"]
+
+    # Define the main sandbox directory using the persistent thread_id
+    sandbox_main = os.path.join("tmp", "sandbox", thread_id)
     os.makedirs(sandbox_main, exist_ok=True)
-    logging.info(f"Created main sandbox directory: {sandbox_main}")
+    logging.info(f"Using persistent main sandbox for session {thread_id}: {sandbox_main}")
 
     for i, doi in enumerate(selected_datasets, 1):
         logging.info(f"Processing DOI: {doi}")
         if doi not in session_data["datasets_cache"]:
-            # Create a subdirectory for this dataset
-            target_dir = os.path.join(sandbox_main, f"dataset_{i}")
+            # Create a more descriptive subdirectory for this dataset
+            sanitized_doi = doi.replace('/', '_').replace(':', '_')
+            target_dir = os.path.join(sandbox_main, f"dataset_{i}_{sanitized_doi}")
             os.makedirs(target_dir, exist_ok=True)
             
             # Fetch dataset into the subdirectory
+            from src.search.dataset_utils import fetch_dataset
             dataset_path, name = fetch_dataset(doi, target_dir=target_dir)
             if dataset_path is not None:
                 session_data["datasets_cache"][doi] = (dataset_path, name)  # dataset_path is target_dir
@@ -284,15 +336,19 @@ def create_and_invoke_supervisor_agent(user_query: str, datasets_info: list, mem
         else:
             messages.append(AIMessage(content=message["content"], name=message["role"]))
 
-    limited_messages = messages[-15:]
+    # The user's query is already in the messages list from the session state.
+    # The line below was adding it a second time, causing duplication. It has been removed.
+    # messages.append(HumanMessage(content=user_query, name="User"))
+    
+    limited_messages = messages[-10:]  # Keep last 15 messages including the new query
     initial_state = {
         "messages": limited_messages,
         "next": "supervisor",
         "agent_scratchpad": [],
-        "input": user_query,
+        "user_query": user_query,  # CRITICAL FIX: Use consistent 'user_query' key
         "plot_images": [],
         "last_agent_message": "",
-        "plan": []  # Added plan to initial state
+        "plan": []
     }
 
     config = {
@@ -318,12 +374,19 @@ def add_user_message_to_data_agent(user_input: str, session_data: dict):
     session_data["messages_data_agent"].append({"role": "user", "content": f"{user_input}"})
 
 
-def add_assistant_message_to_data_agent(content: str, plot_images, visualization_agent_used, session_data: dict):
+def add_assistant_message_to_data_agent(content: str, plot_images, agent_usage_flags, session_data: dict):
+    """
+    UPDATED: Now accepts agent_usage_flags dict instead of single visualization flag
+    """
     new_message = {
         "role": "assistant",
         "content": content,
         "plot_images": plot_images if plot_images else [],
-        "visualization_agent_used": visualization_agent_used
+        "oceanographer_used": agent_usage_flags.get("oceanographer_used", False),
+        "ecologist_used": agent_usage_flags.get("ecologist_used", False),
+        "visualization_used": agent_usage_flags.get("visualization_used", False),
+        "dataframe_used": agent_usage_flags.get("dataframe_used", False),
+        "specialized_agent_used": agent_usage_flags.get("specialized_agent_used", False)
     }
     session_data["messages_data_agent"].append(new_message)
 
@@ -378,6 +441,8 @@ def ensure_memory(session_data: dict):
         session_data["memory"] = CustomMemorySaver()
 
 
-def ensure_thread_id(session_data: dict):
-    if "thread_id" not in session_data:
+def ensure_thread_id(session_data: dict, force_new: bool = False):
+    """Ensures a thread_id exists for the session. Can force creation of a new one."""
+    if force_new or "thread_id" not in session_data or session_data["thread_id"] is None:
         session_data["thread_id"] = str(uuid.uuid4())
+        logging.info(f"Generated new thread_id: {session_data['thread_id']} (forced: {force_new})")

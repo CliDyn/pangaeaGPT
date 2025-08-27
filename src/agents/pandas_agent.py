@@ -1,77 +1,111 @@
 # src/agents/pandas_agent.py
+# REBUILT to use create_openai_tools_agent while keeping the original name.
+
+import os
 import logging
 import streamlit as st
-from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.agents.agent_types import AgentType
-from langchain_experimental.agents.agent_toolkits.pandas.base import create_pandas_dataframe_agent
+from langchain.agents import create_openai_tools_agent, AgentExecutor
 
-from ..config import API_KEY
 from ..prompts import Prompts
+from ..llm_factory import get_llm
+from ..tools.python_repl import CustomPythonREPLTool
+from ..tools.visualization_tools import list_plotting_data_files_tool
 
 def create_pandas_agent(user_query, datasets_info):
     """
-    Creates a pandas DataFrame agent for data analysis.
-    
-    Args:
-        user_query (str): The user's query
-        datasets_info (list): Information about available datasets
-        
-    Returns:
-        AgentExecutor: The pandas agent executor
-    """
-    # Initialize the language model
-    if st.session_state.model_name == "o3-mini":
-        llm = ChatOpenAI(api_key=API_KEY, model_name=st.session_state.model_name)
-    else:
-        llm = ChatOpenAI(api_key=API_KEY, model_name=st.session_state.model_name)
+    Creates a data analysis agent (named DataFrameAgent for compatibility)
+    that only has access to a Python REPL and a file listing tool.
+    This version uses create_openai_tools_agent for more robust, general-purpose code execution.
 
-    # Assign unique variable names to each dataframe and collect dataframes
+    Args:
+        user_query (str): The user's query.
+        datasets_info (list): Information about available datasets.
+
+    Returns:
+        AgentExecutor: The DataFrame agent executor.
+    """
+    # Initialize variables
+    datasets_text = ""
     dataset_variables = []
-    dataframes = []
-    datasets_text = ""  # Initialize datasets_text
-    
-    for i, info in enumerate(datasets_info, 1):  # Start enumeration at 1
-        var_name = f"df{i}"  # Consistently name as df1, df2, etc.
-        dataframes.append(info['dataset'])  # Collect dataframes into a list
+    datasets_for_repl = {} # This will hold the actual data/paths for the REPL tool
+
+    # --- This context setup is borrowed from the visualization agents ---
+    # It ensures the agent knows about the sandbox paths, which is crucial for loading files.
+    uuid_main_dir = None
+    for i, info in enumerate(datasets_info):
+        sandbox_path = info.get('sandbox_path')
+        if sandbox_path and isinstance(sandbox_path, str) and os.path.isdir(sandbox_path):
+            uuid_main_dir = os.path.dirname(os.path.abspath(sandbox_path))
+            break
+            
+    datasets_for_repl["uuid_main_dir"] = uuid_main_dir
+    if uuid_main_dir:
+        results_dir = os.path.join(uuid_main_dir, 'results')
+        os.makedirs(results_dir, exist_ok=True)
+        datasets_for_repl["results_dir"] = results_dir
+
+    # Provide the agent with the direct path variables it needs to construct file paths
+    uuid_paths_info = "### ⚠️ CRITICAL: Use these exact path variables to access data files ⚠️\n"
+    for i, info in enumerate(datasets_info):
+        var_name = f"dataset_{i + 1}"
+        datasets_for_repl[var_name] = info['dataset']
         dataset_variables.append(var_name)
         
-        # Build datasets_text
-        datasets_text += (
-            f"Dataset {i}:\n"  # Adjust index to match variable naming
-            f"Variable Name: {var_name}\n"
+        if isinstance(info['dataset'], str) and os.path.isdir(info['dataset']):
+            full_uuid_path = os.path.abspath(info['dataset']).replace('\\', '/')
+            uuid_paths_info += f"# Path for Dataset {i+1} ({info['name']})\n"
+            uuid_paths_info += f"{var_name}_path = r'{full_uuid_path}'\n"
+    
+    # Provide info on the data itself
+    datasets_summary = ""
+    for i, info in enumerate(datasets_info):
+        datasets_summary += (
+            f"Dataset {i + 1}:\n"
             f"Name: {info['name']}\n"
             f"Description: {info['description']}\n"
-            f"Head of DataFrame (use it only as an example):\n"
-            f"{info['df_head']}\n\n"
+            f"Type: {info['data_type']}\n"
+            f"Sample Data/Info: {info['df_head']}\n\n"
         )
+    
+    datasets_text = uuid_paths_info + "\n" + datasets_summary
+    # --- End of context setup ---
 
-    # Create a custom system prompt that includes information about each dataframe
-    system_prompt = Prompts.generate_pandas_agent_system_prompt(user_query, datasets_text, dataset_variables)
-
-    # Create a ChatPromptTemplate with the system prompt
-    chat_prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", system_prompt),
-            ("user", "{input}"),
-            MessagesPlaceholder(variable_name="chat_history"),
-            MessagesPlaceholder(variable_name="agent_scratchpad"),
-        ]
+    # Get our new, specific prompt for the DataFrameAgent
+    prompt_template = Prompts.generate_pandas_agent_system_prompt(
+        user_query, datasets_text, dataset_variables
     )
 
-    # Create the pandas dataframe agent with the list of dataframes and the chat prompt
-    agent_pandas = create_pandas_dataframe_agent(
-        llm=llm,
-        df=dataframes,  # Pass the list of dataframes
-        agent_type=AgentType.OPENAI_FUNCTIONS,
+    # Use the LLM factory. Low temperature is good for precise code generation.
+    llm = get_llm(temperature=0.0)
+
+    # Define the agent's very specific and limited toolset
+    repl_tool = CustomPythonREPLTool(datasets=datasets_for_repl)
+    tools = [
+        repl_tool,
+        list_plotting_data_files_tool
+    ]
+    
+    # Create the agent using the standard 'create_openai_tools_agent'
+    agent = create_openai_tools_agent(
+        llm,
+        tools=tools,
+        prompt=ChatPromptTemplate.from_messages(
+            [
+                ("system", prompt_template),
+                ("user", "{input}"),
+                MessagesPlaceholder(variable_name="messages"),
+                MessagesPlaceholder(variable_name="agent_scratchpad"),
+            ]
+        )
+    )
+
+    # Create the agent executor
+    return AgentExecutor(
+        agent=agent,
+        tools=tools,
         verbose=True,
-        return_intermediate_steps=True,
-        max_iterations=5,
-        early_stopping_method="generate",
         handle_parsing_errors=True,
-        suffix=system_prompt,
-        allow_dangerous_code=True,
-        chat_prompt=chat_prompt
+        return_intermediate_steps=True,
+        max_iterations=25
     )
-
-    return agent_pandas

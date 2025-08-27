@@ -23,6 +23,10 @@ from src.agents.pandas_agent import create_pandas_agent
 from src.agents.visualization_agent import create_visualization_agent, initialize_agents
 from src.agents.supervisor_agent import create_supervisor_agent, create_and_invoke_supervisor_agent
 from src.agents.base import agent_node
+from src.agents.oceanographer_agent import create_oceanographer_agent
+from src.agents.ecologist_agent import create_ecologist_agent
+from src.tools.copernicus_marine_tool import copernicus_marine_tool
+from src.tools.era5_retrieval_tool import era5_retrieval_tool
 
 # All code that was previously in this file has been moved to appropriate modules.
 # This file now only re-exports symbols to maintain backward compatibility.

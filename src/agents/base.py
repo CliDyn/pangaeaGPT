@@ -1,10 +1,10 @@
-# src/agents/base.py
+# src/agents/base.py 
 import logging
 import os
 import time
 import uuid
 import streamlit as st
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage  # Added SystemMessage import
 
 from ..utils import log_history_event
 from ..tools.package_tools import install_package_tool
@@ -36,12 +36,13 @@ def agent_node(state, agent, name):
     if 'agent_scratchpad' not in state or not isinstance(state['agent_scratchpad'], list):
         state['agent_scratchpad'] = []
 
+    # Keep original logic for backward compatibility, but we'll override it if there's a task
+    # DON'T modify shared state - use local variables instead
     user_messages = [msg for msg in state["messages"] if isinstance(msg, HumanMessage)]
+    local_input = state.get('input', '')
     if user_messages:
         last_user_message = user_messages[-1].content
-        state['input'] = last_user_message
-    else:
-        state['input'] = state.get('input', '')
+        local_input = last_user_message
         
     # Find and include the task from the plan for this agent
     current_task = None
@@ -53,7 +54,7 @@ def agent_node(state, agent, name):
     if current_task:
         task_description = current_task.get('task', '')
         # Only use the task description without the original user query
-        state['input'] = f"TASK: {task_description}"
+        local_input = f"TASK: {task_description}"
         logging.info(f"Modified input for {name} to include ONLY task: {task_description}")
 
     if 'plot_images' not in state or not isinstance(state['plot_images'], list):
@@ -63,12 +64,49 @@ def agent_node(state, agent, name):
     thinking_id = str(uuid.uuid4())
     logging.info(f"Thinking... for {name}")
     
-    # Invoke the agent
-    # Add a placeholder for 'file' if the agent is VisualizationAgent
-    if name == "VisualizationAgent" and 'file' not in state:
-        state['file'] = None  # or provide an appropriate default value
+    # MODIFICATION: Only filter messages if we have a task (normal supervisor flow)
+    # This preserves backward compatibility for any direct agent calls
+    if current_task:
+        # Filter messages to exclude direct user messages when operating under supervisor
+        filtered_messages = []
+        for msg in state.get('messages', []):
+            # Skip HumanMessage objects (direct user input)
+            if isinstance(msg, HumanMessage):
+                logging.debug(f"Filtering out HumanMessage from {name}'s message history")
+                continue
+            # Include AI messages from supervisor or other agents
+            if isinstance(msg, AIMessage):
+                filtered_messages.append(msg)
+            # Include system messages if any
+            if isinstance(msg, SystemMessage):
+                filtered_messages.append(msg)
+        
+        logging.info(f"Filtered messages for {name}: {len(filtered_messages)} messages (from original {len(state.get('messages', []))})")
+        messages_to_use = filtered_messages
+    else:
+        # If no task (edge case), use all messages for backward compatibility
+        messages_to_use = state.get('messages', [])
+        logging.info(f"No task found for {name}, using all {len(messages_to_use)} messages")
+    
+    # Prepare the state for agent invocation
+    # Remove any plot_path references that might be expected
+    # Ensure we're only passing what the agent expects
+    agent_state = {
+        'messages': messages_to_use,  # Use either filtered or all messages based on context
+        'input': local_input,  # Use the local variable instead of modifying shared state
+        'agent_scratchpad': state.get('agent_scratchpad', []),
+        'plot_path': '',  # Empty string to satisfy template while transitioning to results_dir
+        'file': ''
+    }
+    
+    # Add any additional state items
+    for key, value in state.items():
+        if key not in agent_state:
+            agent_state[key] = value
+    
+    # Invoke the agent with cleaned state
     llm_start_time = time.time()
-    result = agent.invoke(state)
+    result = agent.invoke(agent_state)
     llm_end_time = time.time()
     
     # Log thinking completion
@@ -83,7 +121,15 @@ def agent_node(state, agent, name):
     st.session_state['intermediate_steps'].extend(intermediate_steps)
     logging.info(f"Stored {len(intermediate_steps)} intermediate steps for {name}")
 
-    # Log each step to the thinking log with hierarchy
+    # Extract plot_images from the agent's result
+    agent_plot_images = []
+    
+    # Check if the agent returned plot_images in its result
+    if isinstance(result, dict) and 'plot_images' in result:
+        agent_plot_images = result.get('plot_images', [])
+        logging.info(f"Agent {name} returned {len(agent_plot_images)} plot images")
+    
+    # Also check intermediate steps for any plots generated by Python_REPL
     for i, step in enumerate(intermediate_steps):
         action = step[0]
         observation = step[1]
@@ -111,6 +157,14 @@ def agent_node(state, agent, name):
         
         logging.info(f"Result: {obs_summary} for {tool_name}")
         
+        # Check for plot_images in Python_REPL observations
+        if tool_name == 'Python_REPL' and isinstance(observation, dict):
+            step_plot_images = observation.get('plot_images', [])
+            for img in step_plot_images:
+                if img not in agent_plot_images:
+                    agent_plot_images.append(img)
+                    logging.info(f"Found plot from Python_REPL: {img}")
+        
         log_history_event(
             st.session_state,
             "tool_usage",
@@ -124,7 +178,7 @@ def agent_node(state, agent, name):
         logging.info(f"Logged tool usage for {name}, tool: {tool_name}")
 
     # Handle special cases like missing modules
-    if name == "VisualizationAgent":
+    if name in ["OceanographerAgent", "EcologistAgent", "VisualizationAgent"]:
         if isinstance(last_message_content, dict):
             if last_message_content.get("error") == "ModuleNotFoundError":
                 missing_module = last_message_content.get("missing_module")
@@ -141,73 +195,72 @@ def agent_node(state, agent, name):
                 logging.info(f"Install result: {install_result}")
                 if "successfully" in install_result:
                     logging.info(f"Successfully installed {missing_module}, retrying")
-                    retry_result = agent.invoke(state)
+                    retry_result = agent.invoke(agent_state)
                     last_message_content = retry_result.get("output", "")
                 else:
                     logging.info(f"Failed to install {missing_module}")
                     last_message_content = f"Failed to install the missing package '{missing_module}'. Please install it manually."
 
-    # Handle plot generation - UPDATED SECTION FOR FIXING FIGURE SAVING/DISPLAY
-    new_plot_path = st.session_state.get("new_plot_path")
-    logging.info(f"New plot path from session state: {new_plot_path}")
-    
-    # Add validation to ensure the plot path is valid and exists
-    if new_plot_path and os.path.exists(new_plot_path):
-        plot_id = str(uuid.uuid4())
-        plot_time = time.time()
-        
-        # Create a log for the plot generation
-        logging.info(f"Generated plot: {os.path.basename(new_plot_path)}")
-        
-        # Ensure the plot is added to the state's plot_images if not already there
-        if new_plot_path not in state["plot_images"]:
-            state["plot_images"].append(new_plot_path)
+    # Validate that plot files exist
+    valid_plot_images = []
+    for img_path in agent_plot_images:
+        if os.path.exists(img_path):
+            valid_plot_images.append(img_path)
+            if img_path not in state["plot_images"]:
+                state["plot_images"].append(img_path)
             st.session_state.new_plot_generated = True
-        
-        # Log the event for history tracking
-        log_history_event(
-            st.session_state,
-            "plot_generated",
-            {
-                "plot_path": new_plot_path,
-                "agent_name": name,
-                "description": f"Plot generated by {name}"
-            }
-        )
-        logging.info(f"Logged plot generation for {name}, path: {new_plot_path}")
+            
+            # Log the plot generation
+            plot_id = str(uuid.uuid4())
+            logging.info(f"Found valid plot: {os.path.basename(img_path)}")
+            
+            log_history_event(
+                st.session_state,
+                "plot_generated",
+                {
+                    "plot_path": img_path,
+                    "agent_name": name,
+                    "description": f"Plot generated by {name}"
+                }
+            )
+        else:
+            logging.warning(f"Plot file not found: {img_path}")
     
-    # Clear the new_plot_path to prevent duplicating the same plot
-    st.session_state.new_plot_path = None
-    
-    # Finalize the agent execution
-    # Combine plots from returned_plot_images and state["plot_images"], ensuring no duplicates
-    all_plot_images = []
-    for img_path in returned_plot_images:
-        if os.path.exists(img_path) and img_path not in all_plot_images:
-            all_plot_images.append(img_path)
-    
-    for img_path in state["plot_images"]:
-        if os.path.exists(img_path) and img_path not in all_plot_images:
-            all_plot_images.append(img_path)
+    # Clear any legacy plot path references
+    if 'new_plot_path' in st.session_state:
+        st.session_state.new_plot_path = None
     
     # Create the AI message with plot info
     ai_message = AIMessage(
         content=last_message_content,
         name=name,
         additional_kwargs={
-            "plot_images": all_plot_images,
-            "plot": all_plot_images[0] if all_plot_images else None
+            "plot_images": valid_plot_images,  # Use the validated plot images
+            "plot": valid_plot_images[0] if valid_plot_images else None
         }
     )
+    
+    # Also ensure the state includes these plot images
+    state["plot_images"] = valid_plot_images
+    
     state["messages"].append(ai_message)
-    logging.info(f"Appended AI message for {name} with {len(all_plot_images)} plot images")
+    logging.info(f"Appended AI message for {name} with {len(valid_plot_images)} plot images")
 
     # Trim messages if needed
     state["messages"] = state["messages"][-10:]
     
     # Store visualization state clearly
-    if name == "VisualizationAgent":
+    if name == "OceanographerAgent":
+        state["oceanographer_agent_used"] = True
+        state["specialized_agent_used"] = True
+    elif name == "EcologistAgent":
+        state["ecologist_agent_used"] = True
+        state["specialized_agent_used"] = True
+    elif name == "VisualizationAgent":
         state["visualization_agent_used"] = True
+        state["specialized_agent_used"] = True
+    elif name == "DataFrameAgent":
+        state["dataframe_agent_used"] = True
         
     # Ensure last agent message is clearly stored
     state["last_agent_message"] = last_message_content

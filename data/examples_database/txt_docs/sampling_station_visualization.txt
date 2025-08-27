@@ -1,8 +1,6 @@
 --- Cell 1 ---
 sampling_station_visualization.ipynb
-!THIS EXAMPLE SHOULD BE USED ONLY WITH BATHYMETRY AND SHAPE FILES LOADED FROM THE SANDBOX, AS SHOWN BELOW!
-   - bathymetry_file = os.path.join('data', 'plotting_data', 'bathymetry', 'etopo', 'ETOPO2v2c_f4.nc') <- USE THIS!
-   - base_dir = os.path.join('data', 'plotting_data', 'shape_files') <- AND THIS!
+
 --- Cell 2 ---
 # Sampling Station Visualization with Bathymetry
 # ============================================
@@ -92,7 +90,7 @@ def load_bathymetry(extent):
         Bathymetry data
     """
     # Path to bathymetry file (ETOPO2v2)
-    bathymetry_file = os.path.join('data', 'plotting_data', 'bathymetry', 'etopo', 'ETOPO2v2c_f4.nc')
+    bathymetry_file = os.path.join(....)
 
     ds = xr.open_dataset(bathymetry_file)
     bathymetry = ds['z'].sel(

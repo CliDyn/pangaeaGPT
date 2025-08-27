@@ -78,7 +78,8 @@ def convert_df_to_csv(df):
 # Direct download function using static download link
 def download_pangaea_dataset(doi_url, output_dir):
     """
-    Downloads a PANGAEA dataset using the static download link.
+    Downloads a PANGAEA dataset. It first tries to find a static download link.
+    If that fails, it falls back to appending '?format=zip' to the DOI URL.
     
     Args:
         doi_url (str): The DOI URL (e.g., "https://doi.org/10.1594/PANGAEA.785092")
@@ -87,37 +88,56 @@ def download_pangaea_dataset(doi_url, output_dir):
     Returns:
         tuple: (success boolean, path to the extracted files or error message)
     """
-    # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
     
-    # Convert DOI to PANGAEA URL if needed
-    if doi_url.startswith("https://doi.org/"):
-        pangaea_url = f"https://doi.pangaea.de/{doi_url.split('https://doi.org/')[1]}"
+    # Normalize the URL to the doi.pangaea.de format
+    if "doi.org" in doi_url:
+        pangaea_url = doi_url.replace("doi.org", "doi.pangaea.de")
     else:
         pangaea_url = doi_url
     
-    logging.info(f"Step 1: Fetching landing page from {pangaea_url}")
-    
+    # --- METHOD 1: Find the 'static-download-link' on the page ---
+    logging.info(f"Step 1: Attempting to find static download link at {pangaea_url}")
     try:
-        # Fetch the DOI landing page
         response = requests.get(pangaea_url)
         response.raise_for_status()
         
-        # Parse HTML to find the static download link
         soup = BeautifulSoup(response.text, 'html.parser')
-        download_link = soup.find('a', id='static-download-link')
+        static_link_element = soup.find('a', id='static-download-link')
         
-        if not download_link:
-            return False, "ERROR: Could not find the static download link on the page"
+        if static_link_element and static_link_element.get('href'):
+            download_url = static_link_element.get('href')
+            logging.info(f"Step 1 SUCCESS: Found static download URL: {download_url}")
+        else:
+            download_url = None
+            logging.warning("Step 1 FAILED: Could not find the 'static-download-link' element.")
+
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Step 1 ERROR: Failed to fetch the landing page: {str(e)}")
+        download_url = None
+
+    # --- METHOD 2: Fallback to the '?format=zip' method ---
+    if not download_url:
+        logging.info("Step 2: Falling back to direct download method using '?format=zip'")
+        # Ensure the URL doesn't already have query parameters
+        base_pangaea_url = pangaea_url.split('?')[0]
+        download_url = f"{base_pangaea_url}?format=zip"
+        logging.info(f"Step 2: Constructed fallback URL: {download_url}")
+
+    # --- Step 3: Proceed with downloading from the determined URL ---
+    try:
+        filename = "download.zip" # Default filename for the direct method
+        # Try to get a better filename from the URL if possible
+        if '?' in download_url:
+             # For URLs like .../PANGAEA.908815?format=zip, create a filename
+            doi_part = pangaea_url.split('/')[-1].split('?')[0]
+            filename = f"{doi_part}.zip"
+        else:
+            filename = os.path.basename(download_url)
         
-        download_url = download_link.get('href')
-        logging.info(f"Step 2: Found download URL: {download_url}")
-        
-        filename = os.path.basename(download_url)
         local_file_path = os.path.join(output_dir, filename)
         
-        # Download the file with progress bar
-        logging.info(f"Step 3: Downloading file to {local_file_path}")
+        logging.info(f"Step 3: Downloading file from {download_url} to {local_file_path}")
         with requests.get(download_url, stream=True) as r:
             r.raise_for_status()
             total_size = int(r.headers.get('content-length', 0))
@@ -127,35 +147,35 @@ def download_pangaea_dataset(doi_url, output_dir):
                         f.write(chunk)
                         pbar.update(len(chunk))
         
-        # Handle ZIP extraction
-        if filename.lower().endswith('.zip'):
-            logging.info(f"Step 4: Extracting ZIP file {local_file_path} directly into {output_dir}")
+        # --- Step 4: Handle Extraction ---
+        if local_file_path.lower().endswith('.zip'):
+            logging.info(f"Step 4: Extracting ZIP file {local_file_path} into {output_dir}")
             
             with zipfile.ZipFile(local_file_path, 'r') as zip_ref:
-                for member in zip_ref.infolist():
-                    if not member.is_dir():  # Skip directories
-                        # Use only the base filename, ignoring internal paths
-                        base_name = os.path.basename(member.filename)
-                        target_path = os.path.join(output_dir, base_name)
-                        # Extract the file to output_dir
-                        with zip_ref.open(member) as source, open(target_path, 'wb') as target:
-                            shutil.copyfileobj(source, target)
+                # Extract all files directly into the output directory
+                zip_ref.extractall(output_dir)
             
-            logging.info(f"Successfully extracted files directly to {output_dir}")
-            # Optionally remove the ZIP file
+            logging.info(f"Successfully extracted files to {output_dir}")
             os.remove(local_file_path)
-            logging.info(f"Removed ZIP file {local_file_path}")
+            logging.info(f"Removed temporary ZIP file {local_file_path}")
             return True, output_dir
         else:
-            logging.info(f"Successfully downloaded to {local_file_path}")
+            # If it's not a zip, the single file is the result
+            logging.info(f"Successfully downloaded single file to {local_file_path}")
             return True, local_file_path
             
     except requests.exceptions.RequestException as e:
-        return False, f"ERROR: Failed to download - {str(e)}"
+        error_message = f"ERROR: Download failed from URL {download_url}. Reason: {str(e)}"
+        logging.error(error_message)
+        return False, error_message
     except zipfile.BadZipFile:
-        return False, f"ERROR: The downloaded file is not a valid ZIP file"
+        error_message = f"ERROR: The downloaded file from {download_url} is not a valid ZIP file."
+        logging.error(error_message)
+        return False, error_message
     except Exception as e:
-        return False, f"ERROR: An unexpected error occurred - {str(e)}"
+        error_message = f"ERROR: An unexpected error occurred during download/extraction. Reason: {str(e)}"
+        logging.error(error_message, exc_info=True)
+        return False, error_message
 
 # Updated fetch_dataset function
 def fetch_dataset(doi, target_dir=None):

@@ -1,14 +1,15 @@
-# src/agents/visualization_agent.py 
+# src/agents/ecologist_agent.py
 import os
 import logging
 import streamlit as st
 import pandas as pd
 import xarray as xr
+from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.agents import create_openai_tools_agent, AgentExecutor
 
 from ..prompts import Prompts
-from ..llm_factory import get_llm  # Use the new factory
+from ..config import API_KEY
 from ..tools.python_repl import CustomPythonREPLTool
 from ..tools.reflection_tools import reflect_tool
 from ..tools.package_tools import install_package_tool
@@ -17,10 +18,8 @@ from ..tools.visualization_tools import (
     list_plotting_data_files_tool,
     wise_agent_tool
 )
-# from ..tools.era5_retrieval_tool import era5_retrieval_tool
-# from ..tools.copernicus_marine_tool import copernicus_marine_tool
 
-def create_visualization_agent(user_query, datasets_info):
+def create_ecologist_agent(user_query, datasets_info):
     """
     Creates a visualization agent for plotting and data visualization.
     
@@ -37,10 +36,13 @@ def create_visualization_agent(user_query, datasets_info):
     datasets = {}
     
     # Extract the main UUID directory (parent directory of first dataset's sandbox path)
+    # This is the common parent directory all datasets are stored in
     uuid_main_dir = None
     for i, info in enumerate(datasets_info):
+        # Use sandbox_path instead of dataset, as dataset might be a DataFrame object
         sandbox_path = info.get('sandbox_path')
         if sandbox_path and isinstance(sandbox_path, str) and os.path.isdir(sandbox_path):
+            # Get the parent directory (UUID directory)
             uuid_main_dir = os.path.dirname(os.path.abspath(sandbox_path))
             logging.info(f"Found main UUID directory from sandbox_path: {uuid_main_dir}")
             break
@@ -53,10 +55,10 @@ def create_visualization_agent(user_query, datasets_info):
         except Exception as e:
             logging.error(f"Error listing UUID directory files: {str(e)}")
     
-    # Add the UUID directory to the datasets dict
+    # Add the UUID directory to the datasets dict so it can be accessed
     datasets["uuid_main_dir"] = uuid_main_dir
     
-    # Add the results directory for natural saving
+    # ALSO add the results directory for natural saving
     if uuid_main_dir:
         results_dir = os.path.join(uuid_main_dir, 'results')
         os.makedirs(results_dir, exist_ok=True)
@@ -73,7 +75,6 @@ def create_visualization_agent(user_query, datasets_info):
         uuid_paths += f"uuid_main_dir = r'{uuid_main_dir}'\n"
         uuid_paths += f"results_dir = r'{results_dir}'  # 📁 Save all plots here!\n\n"
         uuid_paths += f"# Files currently in main directory: {', '.join(uuid_dir_files) if uuid_dir_files else 'None'}\n\n"         
-    
     # First list all datasets with their paths
     for i, info in enumerate(datasets_info):
         var_name = f"dataset_{i + 1}"
@@ -105,7 +106,7 @@ def create_visualization_agent(user_query, datasets_info):
     uuid_paths += "# 2. ALWAYS use the exact dataset_X_path variables shown above\n"
     uuid_paths += "# 3. ALWAYS check which files exist before trying to read them\n\n"
     
-    # Continue with standard dataset info
+    # Continue with standard dataset info after the path examples
     for i, info in enumerate(datasets_info):
         #var_name = f"dataset_{i + 1}"
         datasets_text += (
@@ -124,10 +125,15 @@ def create_visualization_agent(user_query, datasets_info):
     st.session_state["viz_datasets_text"] = datasets_text
     
     # Generate the prompt with the modified datasets_text
-    prompt = Prompts.generate_visualization_agent_system_prompt(user_query, datasets_text, dataset_variables)
+    prompt = Prompts.generate_ecologist_agent_system_prompt(user_query, datasets_text, dataset_variables)
   
-    # Initialize the LLM using the factory
-    llm = get_llm(temperature=0.1)
+    # Initialize the LLM with CLI mode support
+    from ..config import IS_CLI_MODE
+    if IS_CLI_MODE:
+        model_name = "gpt-5"  # Default model for CLI
+    else:
+        model_name = st.session_state.model_name
+    llm = ChatOpenAI(api_key=API_KEY, model_name=model_name)
 
     # Create the CustomPythonREPLTool with sandbox paths
     repl_tool = CustomPythonREPLTool(
@@ -144,19 +150,16 @@ def create_visualization_agent(user_query, datasets_info):
         #example_visualization_tool,
         list_plotting_data_files_tool,
         wise_agent_tool
-        # era5_retrieval_tool,  # Disabled for VisualizationAgent
-        # copernicus_marine_tool  # Disabled for VisualizationAgent
     ]
     
     # Create the agent with the updated prompt and tools
-    # IMPORTANT: Remove plot_path from the expected variables
     agent_visualization = create_openai_tools_agent(
         llm,
         tools=tools_vis,
         prompt=ChatPromptTemplate.from_messages(
             [
                 ("system", prompt),
-                ("user", "{input}"),
+                ("user", "{input}"),  # THIS LINE IS KEY
                 MessagesPlaceholder(variable_name="messages"),
                 MessagesPlaceholder(variable_name="agent_scratchpad")
             ]
@@ -175,47 +178,37 @@ def create_visualization_agent(user_query, datasets_info):
 
 def initialize_agents(user_query, datasets_info):
     """
-    Initializes all 4 specialized agents based on available dataset types.
+    Initializes agents based on available dataset types.
     
     Args:
         user_query (str): The user's query
         datasets_info (list): Information about available datasets
         
     Returns:
-        tuple: (oceanographer_agent, ecologist_agent, visualization_agent, dataframe_agent)
+        tuple: (ecologist_agent, dataframe_agent)
     """
     if datasets_info:
-        # Create all 4 specialized agents
-        
-        # 1. Create OceanographerAgent (marine/climate data + ERA5 + Copernicus)
-        from .oceanographer_agent import create_oceanographer_agent
-        oceanographer_agent = create_oceanographer_agent(
-            user_query=user_query,
-            datasets_info=datasets_info
-        )
-        
-        # 2. Create EcologistAgent (biodiversity/ecological data, no ERA5/Copernicus)
-        from .ecologist_agent import create_ecologist_agent
+        # Create visualization agent
         ecologist_agent = create_ecologist_agent(
             user_query=user_query,
             datasets_info=datasets_info
         )
-        
-        # 3. Create VisualizationAgent (general visualization, all tools)
-        visualization_agent = create_visualization_agent(
-            user_query=user_query,
-            datasets_info=datasets_info
-        )
 
-        # 4. Create the new powerful DataFrameAgent
-        # We no longer need to check for specific dataframe types, as the new agent is more generic.
-        from .pandas_agent import create_pandas_agent
-        dataframe_agent = create_pandas_agent(user_query, datasets_info)
-        logging.info("DataFrameAgent initialized successfully with new implementation.")
+        # Only create DataFrameAgent if there are pandas DataFrames
+        dataframe_agent = None
+        dataframe_datasets = [info for info in datasets_info if isinstance(info['dataset'], pd.DataFrame)]
+        if dataframe_datasets:
+            from .pandas_agent import create_pandas_agent
+            dataframe_agent = create_pandas_agent(
+                user_query=user_query,
+                datasets_info=dataframe_datasets
+            )
+            logging.info(f"DataFrameAgent initialized with {len(dataframe_datasets)} DataFrames")
+        else:
+            logging.info("No pandas DataFrames available; skipping DataFrameAgent initialization")
 
-        logging.info("All 4 agents initialized successfully")
-        return oceanographer_agent, ecologist_agent, visualization_agent, dataframe_agent
+        return ecologist_agent, dataframe_agent
     else:
         st.warning("No datasets loaded. Please load datasets first.")
         logging.warning("No datasets provided to initialize_agents")
-        return None, None, None, None
+        return None, None

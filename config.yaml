@@ -4,3 +4,9 @@ deployment_mode: local  # set to "local" for local deployment, "huggingface" for
 
 # LangChain region - 'us' or 'eu'
 langchain_region: us  # Set to 'eu' for EU region
+
+# Wise Agent Configuration
+wise_agent:
+  provider: openai  # Options: 'openai' or 'anthropic'
+  openai_model: o3  # or 'gpt-4', 'gpt-3.5-turbo', etc.
+  anthropic_model: claude-3-7-sonnet-20250219  # Keep for switching back
