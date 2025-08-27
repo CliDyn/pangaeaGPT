@@ -33,7 +33,8 @@ def get_llm(model_name: str = None, temperature: float = 0.7):
         'o1-mini',
         'o3-mini', 'o3',
         'o4-mini',
-        'codex-mini-latest'
+        'codex-mini-latest',
+        'gpt-5'
     ]
 
     # Check if the selected model is in the list of models that don't support temperature

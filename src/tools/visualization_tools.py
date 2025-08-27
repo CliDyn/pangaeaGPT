@@ -244,7 +244,7 @@ Please provide visualization advice based on this information.
             llm = ChatAnthropic(
                 model=anthropic_model,
                 anthropic_api_key=anthropic_api_key,
-                temperature=0.2,
+                #temperature=0.2,
             )
             
             logging.info(f"Making request to Claude model: {anthropic_model}")
@@ -257,14 +257,14 @@ Please provide visualization advice based on this information.
             logging.info("Using OpenAI for wise_agent")
             
             # Get the specific model from config
-            openai_model = wise_agent_config.get("openai_model", "gpt-4-turbo-preview")
+            openai_model = wise_agent_config.get("openai_model", "gpt-5")
             
             # Use the factory to get the LLM, but with our specific model
             from langchain_openai import ChatOpenAI
             llm = ChatOpenAI(
                 api_key=API_KEY,
                 model_name=openai_model,
-                temperature=0.2
+                #temperature=0.2
             )
             
             logging.info(f"Making request to OpenAI model: {openai_model}")

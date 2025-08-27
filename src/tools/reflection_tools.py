@@ -78,12 +78,12 @@ def reflect_on_image(image_path: str) -> str:
 9. **Convention Adherence**: Verify that the figure follows scientific conventions. For example, when depicting variables like 'Depth of water' or other vertical dimensions, these should appear on the Y-axis with minimum values at the top and maximum depth at the bottom. This is a critically important scientific convention - if depth/vertical dimensions are incorrectly presented on the horizontal X-axis, assign a score of 1/10.
 
 **SCORING GUIDELINES:**
-- 8-10: Professional quality with no text/label issues
-- 5-7: Minor issues but all text is readable
+- 7-10: Professional quality with no text/label issues
+- 5-6: Minor issues but all text is readable
 - 3-4: Significant problems including some text overlap or readability issues
 - 1-2: Major failures with overlapping text, illegible labels, or missing critical elements
 
-BE EXTREMELY CRITICAL of any text overlap or readability issues. A visualization with overlapping text is fundamentally flawed and should receive a very low score regardless of other qualities.
+BE CRITICAL of any text overlap or readability issues. A visualization with overlapping text is fundamentally flawed and should receive a very low score regardless of other qualities.
 
 Please provide a structured review addressing each of these points. Conclude with an overall assessment of the image quality, highlighting any significant issues or exemplary aspects. Finally, give the image a score out of 10."""
     openai_client = OpenAI(api_key=API_KEY)

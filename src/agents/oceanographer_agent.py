@@ -133,7 +133,11 @@ def create_oceanographer_agent(user_query, datasets_info):
     llm = get_llm(temperature=0.1)
 
     # Create the CustomPythonREPLTool with sandbox paths
-    repl_tool = CustomPythonREPLTool(datasets=datasets)
+    repl_tool = CustomPythonREPLTool(
+        datasets=datasets,
+        results_dir=datasets.get("results_dir"),
+        session_key=st.session_state.get("thread_id", "default")  # чтобы REPL жило в сессии
+    )
 
     # Define the tools available to the agent
     tools_vis = [

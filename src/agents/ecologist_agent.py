@@ -130,13 +130,17 @@ def create_ecologist_agent(user_query, datasets_info):
     # Initialize the LLM with CLI mode support
     from ..config import IS_CLI_MODE
     if IS_CLI_MODE:
-        model_name = "gpt-4.1"  # Default model for CLI
+        model_name = "gpt-5"  # Default model for CLI
     else:
         model_name = st.session_state.model_name
     llm = ChatOpenAI(api_key=API_KEY, model_name=model_name)
 
     # Create the CustomPythonREPLTool with sandbox paths
-    repl_tool = CustomPythonREPLTool(datasets=datasets)
+    repl_tool = CustomPythonREPLTool(
+        datasets=datasets,
+        results_dir=datasets.get("results_dir"),
+        session_key=st.session_state.get("thread_id", "default")  # чтобы REPL жило в сессии
+    )
 
     # Define the tools available to the agent
     tools_vis = [

@@ -267,8 +267,12 @@ def retrieve_era5_data(
 
         logging.info(f"Successfully saved and consolidated Zarr store: {zarr_path}")
 
-        return {"success": True, "output_path_zarr": zarr_path, "variable": variable_id, "message": f"ERA5 data saved to {zarr_path}"}
+        relative_zarr_path = os.path.join(os.path.basename(era5_specific_dir), zarr_filename)
 
+        logging.info(f"Successfully saved and consolidated Zarr store: {zarr_path}")
+
+        return {"success": True, "output_path_zarr": relative_zarr_path, "variable": variable_id, "message": f"ERA5 data saved to {relative_zarr_path}"}
+    
     except AttributeError as ae:
         logging.error(f"AttributeError in ERA5 retrieval: {ae}", exc_info=True)
         error_msg = str(ae)

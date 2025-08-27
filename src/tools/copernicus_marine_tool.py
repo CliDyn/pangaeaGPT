@@ -240,14 +240,16 @@ def retrieve_copernicus_marine_data(
         logging.info(f"Saving to NetCDF file: {nc_path}")
         dataset.to_netcdf(nc_path)
         logging.info(f"Successfully saved to NetCDF: {nc_path}")
+
+        relative_path = os.path.join('copernicus_data', nc_filename)
         
         # 4) Return success with file path
         return {
             "success": True,
-            "output_path": nc_path,
+            "output_path": relative_path, # <--- FIXED: Now returns a clean, usable path
             "dataset_id": dataset_id,
             "variables": variables_info,
-            "message": "Copernicus Marine data downloaded successfully in NetCDF format"
+            "message": f"Copernicus Marine data downloaded successfully in NetCDF format to {relative_path}"
         }
         
     except Exception as e:
