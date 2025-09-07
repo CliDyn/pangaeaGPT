@@ -28,3 +28,7 @@ pydantic_core==2.27.2
 netCDF4==1.6.5
 numpy==1.26.4
 langchain_anthropic
+zarr
+gcsfs
+blosc
+copernicusmarine
