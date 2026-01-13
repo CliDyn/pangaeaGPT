@@ -10,264 +10,226 @@ import streamlit as st
 from io import StringIO
 from pydantic import BaseModel, Field, PrivateAttr
 from langchain_experimental.tools import PythonREPLTool
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 import re
 import threading
-import subprocess
 import json
-import tempfile
+import queue
+import time
+import atexit
+
+# Import Jupyter Client
+try:
+    # We use KernelManager for lifecycle management and KernelClient for communication
+    from jupyter_client import KernelManager
+    from jupyter_client.client import KernelClient
+except ImportError:
+    logging.error("Jupyter client not installed. Please run 'pip install jupyter_client ipykernel'")
+    # Raise error to ensure environment is correctly set up
+    raise ImportError("Missing dependencies for persistent REPL. Install jupyter_client and ipykernel.")
 
 from ..utils import log_history_event
 
-# --- Start of new code for persistent REPL ---
+# --- New Jupyter Kernel Executor ---
 
-class PersistentREPL:
+class JupyterKernelExecutor:
     """
-    Manages a persistent Python execution in SEPARATE subprocess.
+    Manages a persistent Jupyter kernel for code execution.
+    Replaces the previous subprocess-based PersistentREPL.
     """
     def __init__(self, working_dir=None):
         self._working_dir = working_dir
-        self._process = None
+        # Initialize the KernelManager to use the standard python3 kernel
+        self.km = KernelManager(kernel_name='python3')
+        self.kc: Optional[KernelClient] = None
         self.is_initialized = False
-        self._temp_script = None
-        
-        # Start separate Python process
-        self._start_subprocess()
-    
-    def _start_subprocess(self):
-        """Start a separate Python subprocess with the correct venv."""
-        # Get the current Python executable (should be from venv if running in venv)
-        python_executable = sys.executable
-        
-        # Create a script that will run in subprocess
-        script_content = """
-import sys
-import json
-import os
-from io import StringIO
+        self._start_kernel()
 
-# Initialize globals/locals
-exec_globals = {"__builtins__": __builtins__}
-exec_locals = exec_globals
+    def _start_kernel(self):
+        """Starts the Jupyter kernel."""
+        logging.info("Starting Jupyter kernel...")
+        
+        # Ensure the ipykernel is available.
+        try:
+            # Accessing kernel_spec validates that the kernel is installed and found
+            self.km.kernel_spec
+        except Exception as e:
+            logging.error(f"Could not find python3 kernel spec. Ensure ipykernel is installed. Error: {e}")
+            # We might attempt installation here, but it's better to rely on environment setup
+            raise RuntimeError("IPython kernel (python3) not available.")
 
-print("SUBPROCESS_READY", flush=True)
-
-while True:
-    try:
-        # Read command as JSON
-        line = input()
-        if line == "EXIT_SUBPROCESS":
-            break
-        
-        # Parse the command
-        cmd = json.loads(line)
-        
-        if cmd["type"] == "exec":
-            code = cmd["code"]
-            
-            # Capture stdout/stderr
-            old_stdout = sys.stdout
-            old_stderr = sys.stderr
-            stdout_capture = StringIO()
-            stderr_capture = StringIO()
-            
-            try:
-                sys.stdout = stdout_capture
-                sys.stderr = stderr_capture
-                
-                # Execute code with persistent globals/locals
-                exec(code, exec_globals, exec_locals)
-                
-                sys.stdout = old_stdout
-                sys.stderr = old_stderr
-                
-                result = {
-                    "status": "success",
-                    "stdout": stdout_capture.getvalue(),
-                    "stderr": stderr_capture.getvalue()
-                }
-            except Exception as e:
-                sys.stdout = old_stdout
-                sys.stderr = old_stderr
-                result = {
-                    "status": "error",
-                    "error": f"Error: {repr(e)}\\n{type(e).__name__}: {str(e)}",
-                    "stdout": stdout_capture.getvalue(),
-                    "stderr": stderr_capture.getvalue()
-                }
-            
-            print(json.dumps(result), flush=True)
-            
-        elif cmd["type"] == "chdir":
-            os.chdir(cmd["path"])
-            print(json.dumps({"status": "success", "cwd": os.getcwd()}), flush=True)
-            
-    except EOFError:
-        break
-    except Exception as e:
-        print(json.dumps({"status": "fatal", "error": str(e)}), flush=True)
-"""
-        
-        # Write script to temp file
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-            f.write(script_content)
-            self._temp_script = f.name
-        
-        # Start subprocess
-        self._process = subprocess.Popen(
-            [python_executable, "-u", self._temp_script],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=0,
-            env=os.environ.copy()
-        )
-        
-        # Wait for ready signal
-        ready_line = self._process.stdout.readline()
-        if "SUBPROCESS_READY" not in ready_line:
-            raise RuntimeError(f"Failed to start subprocess: {ready_line}")
-        
-        # Change directory if specified
+        # Start the kernel in the specified working directory (CWD)
         if self._working_dir and os.path.exists(self._working_dir):
-            self._send_command({"type": "chdir", "path": self._working_dir})
-            logging.info(f"Changed subprocess working directory to: {self._working_dir}")
+            self.km.start_kernel(cwd=self._working_dir)
+        else:
+            self.km.start_kernel()
+
+        # Create the synchronous client
+        self.kc = self.km.client()
+        self.kc.start_channels()
         
-        logging.info(f"Started separate Python subprocess (PID: {self._process.pid})")
-    
-    def _send_command(self, cmd: dict) -> dict:
-        """Send command to subprocess and get response."""
-        if not self._process or self._process.poll() is not None:
-            self._start_subprocess()
-        
-        # Send command
-        self._process.stdin.write(json.dumps(cmd) + "\n")
-        self._process.stdin.flush()
-        
-        # Get response
-        response_line = self._process.stdout.readline()
-        if not response_line:
-            return {"status": "error", "error": "No response from subprocess"}
-        
-        return json.loads(response_line)
-    
+        # Wait for the kernel to be ready
+        try:
+            self.kc.wait_for_ready(timeout=60)
+            logging.info("Jupyter kernel started and ready.")
+        except RuntimeError as e:
+            logging.error(f"Kernel failed to start: {e}")
+            self.km.shutdown_kernel()
+            raise
+
+    def _execute_code(self, code: str, timeout: float = 300.0) -> Dict[str, Any]:
+        """Executes code synchronously in the kernel and captures outputs."""
+        if not self.kc:
+            return {"status": "error", "error": "Kernel client not available."}
+
+        # Send the execution request
+        msg_id = self.kc.execute(code)
+        result = {
+            "status": "success",
+            "stdout": "",
+            "stderr": "",
+            "display_data": []
+        }
+        start_time = time.time()
+
+        # Process messages until the kernel is idle or timeout occurs
+        while True:
+            if time.time() - start_time > timeout:
+                logging.warning("Kernel execution timed out. Interrupting kernel.")
+                self.km.interrupt_kernel()
+                result["status"] = "error"
+                result["error"] = f"Execution timed out after {timeout} seconds."
+                break
+
+            try:
+                # Get messages from the IOPub channel (where outputs are published)
+                # Use a small timeout to remain responsive
+                msg = self.kc.get_iopub_msg(timeout=0.1)
+            except queue.Empty:
+                # Check if the kernel is still alive if the queue is empty
+                if not self.km.is_alive():
+                    result["status"] = "error"
+                    result["error"] = "Kernel died unexpectedly."
+                    break
+                continue
+            except Exception as e:
+                logging.error(f"Error getting IOPub message: {e}")
+                continue
+
+            # Process the message if it relates to our execution request
+            if msg['parent_header'].get('msg_id') == msg_id:
+                msg_type = msg['msg_type']
+
+                if msg_type == 'status':
+                    if msg['content']['execution_state'] == 'idle':
+                        break  # Execution finished
+                elif msg_type == 'stream':
+                    if msg['content']['name'] == 'stdout':
+                        result["stdout"] += msg['content']['text']
+                    elif msg['content']['name'] == 'stderr':
+                        result["stderr"] += msg['content']['text']
+                elif msg_type == 'display_data' or msg_type == 'execute_result':
+                    # Capture rich display data (e.g., for interactive plots in the future)
+                    result["display_data"].append(msg['content']['data'])
+                    # Also capture text representation for the current agent output
+                    if 'text/plain' in msg['content']['data']:
+                        result["stdout"] += msg['content']['data']['text/plain'] + "\n"
+                elif msg_type == 'error':
+                    result["status"] = "error"
+                    ename = msg['content']['ename']
+                    evalue = msg['content']['evalue']
+                    # Clean ANSI escape codes from traceback
+                    traceback = "\n".join(msg['content']['traceback'])
+                    traceback = re.sub(r'\x1b\[[0-9;]*m', '', traceback)
+                    result["error"] = f"{ename}: {evalue}\n{traceback}"
+                    break
+
+        return result
+
     @staticmethod
     def sanitize_input(query: str) -> str:
-        """Sanitize input to the python REPL (from LangChain)."""
-        # Remove whitespace, backticks, and 'python' keyword
+        """Sanitize input (from LangChain)."""
+        # Remove surrounding backticks, whitespace, and the 'python' keyword
         query = re.sub(r"^(\s|`)*(?i:python)?\s*", "", query)
         query = re.sub(r"(\s|`)*$", "", query)
         return query
-    
+
     def _sanitize_code(self, code: str) -> str:
-        """Clean IPython/Jupyter specific syntax and apply LangChain sanitization."""
-        # First apply LangChain's sanitization
-        code = self.sanitize_input(code)
-        
-        # Handle IPython magic commands (!)
-        lines = []
-        for line in code.split('\n'):
-            # Handle !{sys.executable} or similar
-            if '!{' in line and '}' in line:
-                # Extract the expression and convert to subprocess call
-                import_stmt = "import subprocess, sys"
-                if import_stmt not in lines:
-                    lines.append(import_stmt)
-                # Replace !{expr} with subprocess.run
-                line = re.sub(
-                    r'!\{([^}]+)\}(.*)', 
-                    r'subprocess.run(str(\1) + r"\2", shell=True)', 
-                    line
-                )
-                lines.append(line)
-            # Handle simple !command
-            elif line.strip().startswith('!'):
-                import_stmt = "import subprocess"
-                if import_stmt not in lines:
-                    lines.append(import_stmt)
-                cmd = line.strip()[1:]
-                lines.append(f'subprocess.run("{cmd}", shell=True)')
-            # Remove IPython magics like %matplotlib, %%time
-            elif line.strip().startswith('%'):
-                continue  # Skip IPython magic commands
-            else:
-                lines.append(line)
-        
-        return '\n'.join(lines)
-    
+        """Clean specific syntax."""
+        # Jupyter kernels handle magic commands natively, so we just need LangChain sanitization
+        return self.sanitize_input(code)
+
     def run(self, code: str, timeout: int = 300) -> str:
-        """Execute code in the separate subprocess."""
-        # Clean the code
+        """Execute code in the Jupyter kernel and return formatted output."""
         cleaned_code = self._sanitize_code(code)
-        
-        # Send exec command
-        result = self._send_command({"type": "exec", "code": cleaned_code})
-        
+
+        result = self._execute_code(cleaned_code, timeout)
+
         if result["status"] == "success":
             output = result["stdout"]
             if result.get("stderr"):
+                # Include stderr output (often contains warnings)
                 if output:
-                    output += "\n" + result["stderr"]
+                    output += "\n[STDERR]\n" + result["stderr"]
                 else:
-                    output = result["stderr"]
-            return output
+                    output = "[STDERR]\n" + result["stderr"]
+            return output.strip()
         elif result["status"] == "error":
             return result["error"]
         else:
             return f"Fatal error: {result.get('error', 'Unknown error')}"
-    
-    def close(self):
-        """Cleanup and terminate subprocess."""
-        if self._process:
-            try:
-                # Send exit command
-                self._process.stdin.write("EXIT_SUBPROCESS\n")
-                self._process.stdin.flush()
-                self._process.wait(timeout=2)
-            except:
-                # Force terminate if needed
-                self._process.terminate()
-                try:
-                    self._process.wait(timeout=2)
-                except:
-                    self._process.kill()
-            
-            logging.info(f"Terminated Python subprocess (PID: {self._process.pid})")
-            self._process = None
-        
-        # Clean up temp script
-        if self._temp_script and os.path.exists(self._temp_script):
-            try:
-                os.unlink(self._temp_script)
-            except:
-                pass
 
-# REPLManager остается БЕЗ ИЗМЕНЕНИЙ
+    def close(self):
+        """Cleanup and terminate the kernel."""
+        if self.kc:
+            self.kc.stop_channels()
+        if hasattr(self, 'km') and self.km.is_alive():
+            logging.info("Shutting down Jupyter kernel...")
+            self.km.shutdown_kernel(now=True)
+            logging.info("Jupyter kernel shut down.")
+
+# REPLManager updated to manage JupyterKernelExecutor instances
 class REPLManager:
     """
-    Singleton for managing PersistentREPL instances for each session (thread_id).
+    Singleton for managing JupyterKernelExecutor instances for each session (thread_id).
     """
-    _instances: dict[str, PersistentREPL] = {}
+    _instances: dict[str, JupyterKernelExecutor] = {}
     _lock = threading.Lock()
 
     @classmethod
-    def get_repl(cls, session_id: str, sandbox_path: str = None) -> PersistentREPL:
+    def get_repl(cls, session_id: str, sandbox_path: str = None) -> JupyterKernelExecutor:
         with cls._lock:
             if session_id not in cls._instances:
-                logging.info(f"Creating new persistent REPL for session: {session_id}")
+                logging.info(f"Creating new Jupyter Kernel for session: {session_id}")
                 if sandbox_path:
-                    logging.info(f"Starting REPL in sandbox directory: {sandbox_path}")
-                cls._instances[session_id] = PersistentREPL(working_dir=sandbox_path)
+                    logging.info(f"Starting Kernel in sandbox directory: {sandbox_path}")
+                try:
+                    cls._instances[session_id] = JupyterKernelExecutor(working_dir=sandbox_path)
+                except Exception as e:
+                    logging.error(f"Failed to create Jupyter Kernel for session {session_id}: {e}")
+                    # Raise the exception so the calling agent can handle the failure
+                    raise RuntimeError(f"Failed to initialize execution environment: {e}")
             return cls._instances[session_id]
 
     @classmethod
     def cleanup_repl(cls, session_id: str):
         with cls._lock:
             if session_id in cls._instances:
-                logging.info(f"Closing and removing REPL for session: {session_id}")
+                logging.info(f"Closing and removing Kernel for session: {session_id}")
                 cls._instances[session_id].close()
                 del cls._instances[session_id]
+
+    @classmethod
+    def cleanup_all(cls):
+        """Cleanup all running kernels."""
+        logging.info("Cleaning up all kernels on exit...")
+        sessions = list(cls._instances.keys())
+        for session_id in sessions:
+            cls.cleanup_repl(session_id)
+
+# Ensure kernels are cleaned up when the application exits
+atexit.register(REPLManager.cleanup_all)
+
 # --- End of new code ---
 
 
@@ -282,24 +244,30 @@ class CustomPythonREPLTool(PythonREPLTool):
         self._results_dir = results_dir
         self._session_key = session_key
 
-    def _initialize_session(self, repl: PersistentREPL) -> None:
-        """Prepare the REPL session by importing libraries and auto-loading data."""
-        logging.info("Initializing persistent REPL session with auto-loading...")
-        
+    def _initialize_session(self, repl: JupyterKernelExecutor) -> None:
+        """Prepare the Kernel session by importing libraries and auto-loading data."""
+        logging.info("Initializing persistent Kernel session with auto-loading...")
+
         initialization_code = [
             "import os",
-            "import sys", 
+            "import sys",
             "import pandas as pd",
             "import numpy as np",
             "import matplotlib.pyplot as plt",
             "import xarray as xr",
             "import logging",
-            "from io import StringIO"
+            "from io import StringIO",
+            # Configure matplotlib for non-interactive backend (Crucial for kernels)
+            "import matplotlib",
+            "matplotlib.use('Agg')"
         ]
 
         # Add results_dir if available
         if self._results_dir:
-            initialization_code.append(f"results_dir = r'{self._results_dir}'")
+            # Ensure paths are correctly formatted for the kernel environment (use forward slashes)
+            results_dir_path = os.path.abspath(self._results_dir).replace('\\', '/')
+            initialization_code.append(f"results_dir = r'{results_dir_path}'")
+            # Kernel CWD should handle the existence, but we ensure the 'results' subdirectory exists
             initialization_code.append("os.makedirs(results_dir, exist_ok=True)")
 
         # Inject dataset variables by auto-loading from files
@@ -309,82 +277,113 @@ class CustomPythonREPLTool(PythonREPLTool):
                 path_var_name = f"{key}_path"
                 abs_path = os.path.abspath(value).replace('\\', '/')
                 initialization_code.append(f"{path_var_name} = r'{abs_path}'")
-                logging.info(f"Injected path variable {path_var_name} = {abs_path}")
-                
-                # 2. Attempt to find and auto-load data.csv into the main variable (e.g., dataset_1)
+
+                # 2. Attempt to find and auto-load data.csv
                 csv_path = os.path.join(value, 'data.csv')
                 if os.path.exists(csv_path):
                     initialization_code.append(f"# Auto-loading {key} from data.csv")
                     initialization_code.append(f"try:")
                     initialization_code.append(f"    {key} = pd.read_csv(os.path.join({path_var_name}, 'data.csv'))")
-                    initialization_code.append(f"    print(f'Successfully auto-loaded {{os.path.join({path_var_name}, \"data.csv\")}} into `{key}` variable.')")
+                    initialization_code.append(f"    print(f'Successfully auto-loaded data.csv into `{key}` variable.')")
                     initialization_code.append(f"except Exception as e:")
                     initialization_code.append(f"    print(f'Could not auto-load {key}: {{e}}')")
-                    logging.info(f"Added auto-loading code for {key} from {csv_path}")
+
             elif key == "uuid_main_dir" and isinstance(value, str):
                 # Add the main UUID directory
                 abs_path = os.path.abspath(value).replace('\\', '/')
                 initialization_code.append(f"uuid_main_dir = r'{abs_path}'")
-                logging.info(f"Injected uuid_main_dir = {abs_path}")
 
         # Execute all initialization code in one go
         full_init_code = "\n".join(initialization_code)
-        logging.debug(f"REPL initialization code:\n{full_init_code}")
         result = repl.run(full_init_code)
-        logging.info(f"REPL session initialization result: {result.strip()}")
+        logging.info(f"Kernel session initialization result: {result.strip()}")
         repl.is_initialized = True
 
     def _run(self, query: str, **kwargs) -> Any:
         """
-        Execute code using the persistent REPL tied to the session.
+        Execute code using the persistent Jupyter Kernel tied to the session.
         """
-        # Get thread_id from session_state
-        if 'thread_id' not in st.session_state or not st.session_state.thread_id:
-            logging.error("CRITICAL ERROR: thread_id not found in session_state. Cannot run persistent REPL.")
-            return {
-                "result": "ERROR: Session ID is missing. Cannot continue.",
-                "output": "ERROR: Session ID is missing. Cannot continue.",
+        # Get thread_id from session_state (works in Streamlit and mocked CLI)
+        try:
+            session_id = st.session_state.thread_id
+            if not session_id:
+                raise ValueError("Session ID (thread_id) is empty or None.")
+        except (AttributeError, ValueError, KeyError) as e:
+             logging.error(f"CRITICAL ERROR: Could not retrieve session_id. Error: {e}")
+             return {
+                "result": "ERROR: Session ID is missing. Cannot continue execution.",
+                "output": "ERROR: Session ID is missing. Cannot continue execution.",
                 "plot_images": []
             }
-        
-        session_id = st.session_state.thread_id
-        # Get sandbox path from datasets
+
+        # Get sandbox path from datasets (this is the intended working directory)
         sandbox_path = self._datasets.get("uuid_main_dir")
-        repl = REPLManager.get_repl(session_id, sandbox_path=sandbox_path)
+        
+        try:
+            # Retrieve or create the kernel executor
+            repl = REPLManager.get_repl(session_id, sandbox_path=sandbox_path)
+        except RuntimeError as e:
+            # Handle kernel initialization failure
+            return {
+                "result": f"ERROR: Failed to initialize the execution environment (Jupyter Kernel). Details: {e}",
+                "output": f"ERROR: Failed to initialize the execution environment (Jupyter Kernel). Details: {e}",
+                "plot_images": []
+            }
 
         # "Warm up" the REPL on first call in the session
         if not repl.is_initialized:
             self._initialize_session(repl)
-            repl.is_initialized = True
 
-        logging.info(f"Executing code in persistent REPL for session {session_id}:\n{query}")
-        
+        logging.info(f"Executing code in persistent Kernel for session {session_id}:\n{query}")
+
         # Execute user code
         output = repl.run(query)
 
         # Logic for detecting generated plots
         generated_plots = []
         image_extensions = ('.png', '.jpg', '.jpeg', '.svg', '.pdf')
-        
-        # Check for plot files in the output
-        output_lines = output.strip().split('\n')
-        for line in output_lines:
-            potential_path = line.strip()
-            if potential_path.lower().endswith(image_extensions) and os.path.exists(potential_path):
-                if potential_path not in generated_plots:
-                    generated_plots.append(potential_path)
-                    logging.info(f"Found plot path in output: {potential_path}")
 
-        # Also check results directory if it exists
+        # --- Plot Detection Logic ---
+        # The kernel executes with the sandbox_path as its CWD.
+        # We rely on the agent saving plots to relative paths (e.g., 'results/plot.png')
+        
+        # 1. Check for plot files mentioned in the output (stdout/stderr)
+        # Use regex to find potential paths (e.g., "Plot saved to: results/my_plot.png")
+        matches = re.findall(r'([a-zA-Z0-9_\-/\\.]+\.(png|jpg|jpeg|svg|pdf))', output, re.IGNORECASE)
+        for match in matches:
+            potential_path = match[0].strip()
+            
+            # Resolve the path relative to the sandbox directory (where the kernel is running)
+            if sandbox_path:
+                # Normalize slashes
+                potential_path = potential_path.replace('\\', '/')
+                full_potential_path = os.path.join(sandbox_path, potential_path)
+            else:
+                # If no sandbox path (e.g. CLI fallback), check relative to current working dir
+                full_potential_path = os.path.abspath(potential_path)
+
+            if os.path.exists(full_potential_path):
+                if full_potential_path not in generated_plots:
+                    generated_plots.append(full_potential_path)
+                    logging.info(f"Found plot path in output: {full_potential_path}")
+
+        # 2. Check results directory for recently created files (fallback mechanism)
         if self._results_dir and os.path.exists(self._results_dir):
             for file in os.listdir(self._results_dir):
                 if file.lower().endswith(image_extensions):
                     full_path = os.path.join(self._results_dir, file)
                     if full_path not in generated_plots and os.path.exists(full_path):
-                        generated_plots.append(full_path)
+                        # Check if file was created recently (within the last 10 seconds)
+                        # This prevents picking up old plots from the same session
+                        if time.time() - os.path.getmtime(full_path) < 10:
+                             generated_plots.append(full_path)
+                             logging.info(f"Found recent plot in results directory: {full_path}")
 
         if generated_plots:
-            st.session_state.new_plot_generated = True
+            # Update UI flag if using Streamlit (safe check)
+            if 'streamlit' in sys.modules and hasattr(st, 'session_state'):
+                st.session_state.new_plot_generated = True
+            
             log_history_event(
                 st.session_state, "plot_generated",
                 {"plot_paths": generated_plots, "agent": "PythonREPL", "content": query}

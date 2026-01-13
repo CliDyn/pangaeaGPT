@@ -4,7 +4,12 @@ import os
 import time
 import uuid
 import streamlit as st
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage  # Added SystemMessage import
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+# Add imports needed for the new helper functions
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain.agents import create_openai_tools_agent, AgentExecutor
+import sys
+from typing import Dict, List, Any, Tuple
 
 from ..utils import log_history_event
 from ..tools.package_tools import install_package_tool
@@ -271,3 +276,119 @@ def agent_node(state, agent, name):
     
     logging.info(f"Completed agent_node for {name}")
     return state
+
+def prepare_visualization_environment(datasets_info: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], str, List[str]]:
+    """
+    Prepares dataset information, sandbox paths, and formatted text
+    for visualization agents. Centralizes logic previously duplicated.
+    """
+    # Initialize variables
+    datasets_text = ""
+    dataset_variables = []
+    datasets = {}
+
+    # 1. Extract the main UUID directory (sandbox)
+    uuid_main_dir = None
+    for info in datasets_info:
+        sandbox_path = info.get('sandbox_path')
+        if sandbox_path and isinstance(sandbox_path, str) and os.path.isdir(sandbox_path):
+            uuid_main_dir = os.path.dirname(os.path.abspath(sandbox_path))
+            logging.info(f"Found main UUID directory from sandbox_path: {uuid_main_dir}")
+            break
+
+    datasets["uuid_main_dir"] = uuid_main_dir
+
+    # 2. Setup results directory and list files
+    results_dir = None
+    uuid_dir_files = []
+    if uuid_main_dir and os.path.exists(uuid_main_dir):
+        results_dir = os.path.join(uuid_main_dir, 'results')
+        os.makedirs(results_dir, exist_ok=True)
+        datasets["results_dir"] = results_dir
+        logging.info(f"Added results_dir to datasets: {results_dir}")
+        try:
+            uuid_dir_files = os.listdir(uuid_main_dir)
+        except Exception as e:
+            logging.error(f"Error listing UUID directory files: {str(e)}")
+
+    # 3. Path instructions for the prompt
+    uuid_paths = "### ⚠️ CRITICAL: EXACT DATASET PATHS - MUST USE THESE EXACTLY AS SHOWN ⚠️\n"
+    uuid_paths += "The following paths contain unique IDs that MUST BE used with os.path.join():\n\n"
+
+    if uuid_main_dir:
+        uuid_paths += f"# MAIN OUTPUT DIRECTORY - YOUR WORKSPACE:\n"
+        uuid_paths += f"uuid_main_dir = r'{uuid_main_dir}'\n"
+        uuid_paths += f"results_dir = r'{results_dir}'  # 📁 Save all plots here!\n\n"
+        uuid_paths += f"# Files currently in main directory: {', '.join(uuid_dir_files) if uuid_dir_files else 'None'}\n\n"
+
+    # 4. Process individual datasets
+    for i, info in enumerate(datasets_info):
+        var_name = f"dataset_{i + 1}"
+        datasets[var_name] = info['dataset']
+        dataset_variables.append(var_name)
+        
+        sandbox_path = info.get('sandbox_path')
+        if sandbox_path and isinstance(sandbox_path, str) and os.path.isdir(sandbox_path):
+            full_uuid_path = os.path.abspath(sandbox_path).replace('\\', '/')
+            uuid_paths += f"# Dataset {i+1}: {info['name']}\n"
+            uuid_paths += f"# This dataset is located in a directory. Use the path variable below.\n"
+            uuid_paths += f"{var_name}_path = r'{full_uuid_path}'\n\n"
+            
+            # List files within the dataset path
+            if os.path.exists(full_uuid_path):
+                try:
+                    files = os.listdir(full_uuid_path)
+                    uuid_paths += f"# Files available in {var_name}_path: {', '.join(files)}\n\n"
+                except Exception as e:
+                    uuid_paths += f"# Error listing files: {str(e)}\n\n"
+
+    # 5. Global warnings
+    uuid_paths += "# ⚠️ CRITICAL WARNINGS ⚠️\n"
+    uuid_paths += "# 1. NEVER use '/mnt/data/...' or similar paths - they DO NOT EXIST and WILL CAUSE ERRORS\n"
+    uuid_paths += "# 2. ALWAYS use the exact dataset_X_path variables shown above\n"
+    uuid_paths += "# 3. ALWAYS check which files exist before trying to read them\n\n"
+
+    # 6. Standard dataset info summary
+    datasets_summary = ""
+    for i, info in enumerate(datasets_info):
+        datasets_summary += (
+            f"Dataset {i + 1}:\n"
+            f"Name: {info['name']}\n"
+            f"Description: {info['description']}\n"
+            f"Type: {info['data_type']}\n"
+            f"Sample Data: {info['df_head']}\n\n"
+        )
+
+    datasets_text = uuid_paths + datasets_summary
+
+    # Store in session state if running in Streamlit context
+    if "streamlit" in sys.modules and hasattr(st, 'session_state'):
+       st.session_state["viz_datasets_text"] = datasets_text
+
+    return datasets, datasets_text, dataset_variables
+
+def create_standard_agent_executor(llm, tools, prompt_template, max_iterations=25) -> AgentExecutor:
+    """
+    Common function to create a standard AgentExecutor using create_openai_tools_agent.
+    """
+    agent = create_openai_tools_agent(
+        llm,
+        tools=tools,
+        prompt=ChatPromptTemplate.from_messages(
+            [
+                ("system", prompt_template),
+                ("user", "{input}"),
+                MessagesPlaceholder(variable_name="messages"),
+                MessagesPlaceholder(variable_name="agent_scratchpad")
+            ]
+        )
+    )
+
+    return AgentExecutor(
+        agent=agent,
+        tools=tools,
+        verbose=True,
+        handle_parsing_errors=True,
+        return_intermediate_steps=True,
+        max_iterations=max_iterations
+    )
