@@ -208,8 +208,11 @@ class Prompts:
         tools = Prompts._get_visualization_tools_section(include_era5_copernicus=True)
         
         era5_copernicus_section = (
-            f"\n### When to use ERA5 vs Copernicus Marine Data:\n"
-            f"- Use **ERA5** for atmospheric data: temperature, precipitation, wind, humidity, pressure\n"
+            f"\n### 🌍 When to use ERA5 (Earthmover) vs Copernicus Marine Data:\n"
+            f"- Use **ERA5** (via `retrieve_era5_data`) for Atmospheric/Surface data: Air Temp ('t2'), Wind ('u10','v10'), Pressure ('mslp'), Rain ('cp', 'lsp').\n"
+            f"  * **CRITICAL OPTIMIZATION**: You MUST set `query_type` correctly!\n"
+            f"  * If the user wants a **MAP** (large area, specific time), set `query_type='spatial'`.\n"
+            f"  * If the user wants a **TIME SERIES** (specific location, long duration), set `query_type='temporal'`.\n"
             f"- Use **Copernicus Marine** for ocean data: sea temperature, salinity, currents, sea level, chlorophyll\n"
             f"- For coastal or ocean studies, Copernicus Marine offers higher resolution\n"
             f"- Copernicus Marine products:\n"

@@ -15,53 +15,51 @@ else:
     app_config = {}
 
 # Export deployment mode for use in other modules
-# Check if running in CLI mode
 IS_CLI_MODE = os.environ.get("PANGAEA_CLI_MODE", "false").lower() == "true"
 
-# Export deployment mode for use in other modules
 if IS_CLI_MODE:
     DEPLOYMENT_MODE = "cli"
 else:
-    DEPLOYMENT_MODE = app_config.get("deployment_mode", "huggingface")  # default to local if not specified
+    DEPLOYMENT_MODE = app_config.get("deployment_mode", "huggingface")
 
 # --- Set API Keys based on Deployment Mode ---
 if DEPLOYMENT_MODE == "local":
-    # In local mode, use st.secrets
     try:
         API_KEY = st.secrets["general"]["openai_api_key"]
         LANGCHAIN_API_KEY = st.secrets["general"]["langchain_api_key"]
-        # Use the environment variable if it exists; otherwise, fall back to st.secrets
         LANGCHAIN_PROJECT_NAME = os.environ.get("LANGCHAIN_PROJECT_NAME", st.secrets["general"]["langchain_project_name"])
+        LANGCHAIN_REGION = os.environ.get("LANGCHAIN_REGION", st.secrets["general"].get("langchain_region", "us"))
         
-        # Get LangChain region from secrets or default to 'us'
-        LANGCHAIN_REGION = os.environ.get("LANGCHAIN_REGION", 
-                                          st.secrets["general"].get("langchain_region", "us"))
+        # --- NEW: Earthmover / Arraylake API Key ---
+        # Try secrets first, then environment variable
+        ARRAYLAKE_API_KEY = st.secrets["general"].get("arraylake_api_key", os.environ.get("ARRAYLAKE_API_KEY", ""))
+        
     except (KeyError, AttributeError):
-        # Fallback to environment variables if secrets not available
         API_KEY = os.environ.get("OPENAI_API_KEY", "")
         LANGCHAIN_API_KEY = os.environ.get("LANGCHAIN_API_KEY", "")
         LANGCHAIN_PROJECT_NAME = os.environ.get("LANGCHAIN_PROJECT_NAME", "")
         LANGCHAIN_REGION = os.environ.get("LANGCHAIN_REGION", "us")
+        ARRAYLAKE_API_KEY = os.environ.get("ARRAYLAKE_API_KEY", "")
+        
 elif DEPLOYMENT_MODE == "cli":
-    # In CLI mode, use environment variables only
     API_KEY = os.environ.get("OPENAI_API_KEY", "")
     LANGCHAIN_API_KEY = os.environ.get("LANGCHAIN_API_KEY", "")
     LANGCHAIN_PROJECT_NAME = os.environ.get("LANGCHAIN_PROJECT_NAME", "")
     LANGCHAIN_REGION = os.environ.get("LANGCHAIN_REGION", "us")
+    ARRAYLAKE_API_KEY = os.environ.get("ARRAYLAKE_API_KEY", "")
 else:
-    # Huggingface or other modes
     API_KEY = os.environ.get("OPENAI_API_KEY", "")
     LANGCHAIN_API_KEY = os.environ.get("LANGCHAIN_API_KEY", "")
     LANGCHAIN_PROJECT_NAME = os.environ.get("LANGCHAIN_PROJECT_NAME", "")
-    LANGCHAIN_REGION = os.environ.get("LANGCHAIN_REGION", "us")  # default to 'us' if not specified
+    LANGCHAIN_REGION = os.environ.get("LANGCHAIN_REGION", "us")
+    ARRAYLAKE_API_KEY = os.environ.get("ARRAYLAKE_API_KEY", "")
 
-# Set the appropriate LangChain endpoint based on region
 if LANGCHAIN_REGION.lower() == "eu":
     LANGCHAIN_ENDPOINT = "https://eu.api.smith.langchain.com"
-else:  # Default to US
+else:
     LANGCHAIN_ENDPOINT = "https://api.smith.langchain.com"
 
-# --- Logging Setup (unchanged) ---
+# --- Logging Setup ---
 logs_dir = os.path.join(os.getcwd(), 'logs')
 os.makedirs(logs_dir, exist_ok=True)
 

@@ -3,7 +3,7 @@
 import logging
 from typing import List, Dict, Any
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.agents import create_openai_tools_agent, AgentExecutor
+from langchain_classic.agents import create_openai_tools_agent, AgentExecutor
 
 from ..config import IS_CLI_MODE
 from ..llm_factory import get_llm  # Use the new factory

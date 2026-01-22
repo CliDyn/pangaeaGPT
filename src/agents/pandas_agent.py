@@ -5,7 +5,9 @@ import os
 import logging
 import streamlit as st
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.agents import create_openai_tools_agent, AgentExecutor
+from langchain_classic.agents import create_openai_tools_agent
+from langchain_classic.agents import AgentExecutor
+
 
 from ..prompts import Prompts
 from ..llm_factory import get_llm

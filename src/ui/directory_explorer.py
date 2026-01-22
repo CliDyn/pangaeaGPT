@@ -30,7 +30,20 @@ def get_directory_tree(path: str, max_depth: int = 5, current_depth: int = 0) ->
         "children": [],
         "size": 0
     }
-    
+
+    # Treat .zarr as a package
+    if path.endswith('.zarr'):
+        tree["type"] = "package"
+        total_size = 0
+        for dirpath, _, filenames in os.walk(path):
+            for f in filenames:
+                try:
+                    total_size += os.path.getsize(os.path.join(dirpath, f))
+                except:
+                    pass
+        tree["size"] = total_size
+        return tree
+
     if current_depth >= max_depth:
         return tree
     
@@ -159,14 +172,20 @@ def build_tree_markdown(node: Dict, depth: int = 0, max_depth: int = 5) -> str:
     if node["type"] == "directory" and "children" in node:
         # Sort children: directories first, then files
         dirs = [c for c in node["children"] if c["type"] == "directory"]
+        packages = [c for c in node["children"] if c["type"] == "package"]
         files = [c for c in node["children"] if c["type"] == "file"]
-        
+
         # Add directories
         for child in dirs:
             folder_icon = "📁" if child.get("children") else "📂"
             markdown += f"{indent}- {folder_icon} **{child['name']}**\n"
             markdown += build_tree_markdown(child, depth + 1, max_depth)
-        
+
+        # Add packages
+        for child in packages:
+            size_str = format_size(child.get("size", 0))
+            markdown += f"{indent}- 📦 **{child['name']}** (Zarr Store, {size_str})\n"
+
         # Add files
         for file in files:
             file_icon = get_file_icon(file["name"])
@@ -189,7 +208,7 @@ def render_tree_node(node: Dict, key_prefix: str = "", depth: int = 0) -> None:
     if node["type"] == "directory":
         # Use emoji for folders
         folder_icon = "📁" if node.get("children") else "📂"
-        
+
         # Only use expanders for top-level directories
         if depth == 0:
             # Create expander for top-level directories - COLLAPSED by default
@@ -209,7 +228,11 @@ def render_tree_node(node: Dict, key_prefix: str = "", depth: int = 0) -> None:
             # For non-top-level directories, this shouldn't be called
             # but if it is, just render as markdown
             st.markdown(f"{'  ' * depth}- {folder_icon} **{node['name']}**")
-    
+
+    elif node["type"] == "package":
+        size_str = format_size(node.get("size", 0))
+        st.markdown(f"{'  ' * depth}- 📦 **{node['name']}** (Zarr Store, {size_str})")
+
     elif node["type"] == "error":
         st.error(f"❌ {node['name']}")
 

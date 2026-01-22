@@ -6,9 +6,8 @@ from pydantic import BaseModel, Field
 from typing import Optional
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool
-from langchain.agents.format_scratchpad.openai_tools import format_to_openai_tool_messages
-from langchain.agents.output_parsers.openai_tools import OpenAIToolsAgentOutputParser
-from langchain.agents import AgentExecutor
+from langchain_classic.agents import AgentExecutor
+from langchain_classic.agents import create_openai_tools_agent
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_community.chat_message_histories import ChatMessageHistory
@@ -420,16 +419,7 @@ The parallel_search_pangaea tool returns:
     llm_with_tools = llm.bind_tools(tools)
 
     # Create agent
-    agent = (
-        {
-            "input": lambda x: x["input"],
-            "chat_history": lambda x: x.get("chat_history", []),
-            "agent_scratchpad": lambda x: format_to_openai_tool_messages(x["intermediate_steps"]),
-        }
-        | prompt
-        | llm_with_tools
-        | OpenAIToolsAgentOutputParser()
-    )
+    agent = create_openai_tools_agent(llm, tools, prompt)
 
     # Adjust max_iterations based on mode
     max_iterations = 5 if search_mode == "simple" else 15

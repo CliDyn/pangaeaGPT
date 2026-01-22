@@ -7,7 +7,9 @@ import streamlit as st
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 # Add imports needed for the new helper functions
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.agents import create_openai_tools_agent, AgentExecutor
+from langchain_classic.agents import create_openai_tools_agent
+from langchain_classic.agents import AgentExecutor
+
 import sys
 from typing import Dict, List, Any, Tuple
 

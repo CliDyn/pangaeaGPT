@@ -96,11 +96,31 @@ def list_plotting_data_files(dummy_arg: str = "") -> str:
                 # Get the parent sandbox UUID directory
                 parent_dir = os.path.dirname(os.path.abspath(dataset_path))
                 sandbox_dirs.add(parent_dir)
-        
+
         # List all files from each UUID directory recursively
         for sandbox_dir in sandbox_dirs:
             if os.path.exists(sandbox_dir):
                 for root, dirs, files in os.walk(sandbox_dir):
+                    # --- SMART ZARR HANDLING ---
+                    # Treat directories ending in .zarr as single files
+                    zarr_dirs = [d for d in dirs if d.endswith('.zarr')]
+                    for zarr_dir in zarr_dirs:
+                        full_path = os.path.join(root, zarr_dir)
+                        if full_path.startswith(cwd):
+                            rel_path = full_path[len(cwd)+1:]
+                        else:
+                            rel_path = full_path
+                        rel_path = rel_path.replace('\\', '/')
+
+                        if "era5_data" in rel_path:
+                            all_files.append(f"ERA5 (Zarr Store): {rel_path}")
+                        else:
+                            all_files.append(f"DATA (Zarr Store): {rel_path}")
+
+                        # Stop recursing into this dir
+                        dirs.remove(zarr_dir)
+                    # ---------------------------
+
                     for filename in files:
                         full_path = os.path.join(root, filename)
                         # Convert to relative path by removing the cwd prefix
@@ -108,10 +128,10 @@ def list_plotting_data_files(dummy_arg: str = "") -> str:
                             rel_path = full_path[len(cwd)+1:]  # +1 to remove leading slash
                         else:
                             rel_path = full_path
-                            
+
                         # Use consistent forward slashes
                         rel_path = rel_path.replace('\\', '/')
-                        
+
                         # Include a prefix to distinguish ERA5 files
                         if "era5_data" in rel_path:
                             all_files.append(f"ERA5: {rel_path}")

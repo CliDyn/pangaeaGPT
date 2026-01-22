@@ -204,9 +204,11 @@ For visualization and data analysis requests (like plotting, data manipulation, 
     tools = [planning_tool]
     
     # Create the supervisor chain with forced function calling
-    llm_with_tools = llm_supervisor.bind_functions(
-        functions=[function_def], 
-        function_call={"name": "route"}  # Force it to use the route function
+    tool_def = {"type": "function", "function": function_def}
+
+    llm_with_tools = llm_supervisor.bind_tools(
+        tools=[tool_def],
+        tool_choice={"type": "function", "function": {"name": "route"}},
     )
 
     # Update chain definition to handle plan correctly
