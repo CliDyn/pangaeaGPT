@@ -1,4 +1,4 @@
-# src/utils.py - Updated generate_unique_image_path function
+# src/utils/__init__.py - Updated utilities with WorkspaceManager
 
 import os
 import uuid
@@ -10,33 +10,23 @@ import streamlit as st
 import time
 import json
 
+from .workspace import WorkspaceManager
+
 # Generate a unique image path for saving plots
 def generate_unique_image_path(sandbox_path=None):
     """
-    Generate a unique image path for saving plots.
-    
-    Args:
-        sandbox_path: Optional path to the current sandbox directory.
-                     If provided, saves to sandbox/results/ instead of tmp/figs/
-    
+    Generate a unique image path for saving plots using WorkspaceManager.
+    Ignores sandbox_path arg to enforce centralized logic.
+
     Returns:
         str: Full path to save the image
     """
     unique_filename = f'fig_{uuid.uuid4()}.png'
-    logging.info(f"DEBUG generate_unique_image_path called with sandbox_path: {sandbox_path}")
-    if sandbox_path and os.path.exists(sandbox_path):
-        # Save to sandbox/results/ directory
-        results_dir = os.path.join(sandbox_path, 'results')
-        os.makedirs(results_dir, exist_ok=True)
-        unique_path = os.path.join(results_dir, unique_filename)
-        logging.debug(f"Generated sandbox image path: {unique_path}")
-    else:
-        # Fallback to original behavior
-        figs_dir = os.path.join('tmp', 'figs')
-        os.makedirs(figs_dir, exist_ok=True)
-        unique_path = os.path.join(figs_dir, unique_filename)
-        logging.debug(f"Generated default image path: {unique_path}")
-    
+
+    # Используем менеджер как единственный источник правды
+    unique_path = os.path.join(WorkspaceManager.get_results_dir(), unique_filename)
+    logging.info(f"Generated image path: {unique_path}")
+
     return unique_path
 
 
@@ -77,45 +67,45 @@ def make_json_serializable(obj):
     import pandas as pd
     import numpy as np
     from datetime import datetime, date
-    
+
     # Handle None
     if obj is None:
         return None
-    
+
     # Handle basic JSON-serializable types
     if isinstance(obj, (str, int, float, bool)):
         return obj
-    
+
     # Handle datetime objects
     if isinstance(obj, (datetime, date)):
         return obj.isoformat()
-    
+
     # Handle pandas Series
     if isinstance(obj, pd.Series):
         return obj.to_dict()
-    
+
     # Handle pandas DataFrame
     if isinstance(obj, pd.DataFrame):
         return obj.to_dict(orient='records')
-    
+
     # Handle numpy arrays and numpy scalars
     if hasattr(obj, 'tolist'):
         return obj.tolist()
     if hasattr(obj, 'item'):
         return obj.item()
-    
+
     # Handle dictionaries recursively
     if isinstance(obj, dict):
         return {k: make_json_serializable(v) for k, v in obj.items()}
-    
+
     # Handle lists and tuples recursively
     if isinstance(obj, (list, tuple)):
         return [make_json_serializable(item) for item in obj]
-    
+
     # Handle sets
     if isinstance(obj, set):
         return list(obj)
-    
+
     # For any other object, try to convert to dict or string
     try:
         # Try to get __dict__ attribute
@@ -123,7 +113,7 @@ def make_json_serializable(obj):
             return make_json_serializable(obj.__dict__)
     except:
         pass
-    
+
     # Last resort: convert to string
     return str(obj)
 
@@ -137,7 +127,7 @@ def log_history_event(session_data: dict, event_type: str, details: dict):
         "type": event_type,
         "timestamp": timestamp
     }
-    
+
     # Convert details to JSON-serializable format BEFORE adding to event
     try:
         serializable_details = make_json_serializable(details)

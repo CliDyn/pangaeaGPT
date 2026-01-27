@@ -3,24 +3,22 @@ import logging
 import streamlit as st
 import pandas as pd
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool
 from langchain_classic.agents import AgentExecutor
 from langchain_classic.agents import create_openai_tools_agent
 from langchain_core.messages import HumanMessage, AIMessage
-from langchain_core.runnables.history import RunnableWithMessageHistory
-from langchain_community.chat_message_histories import ChatMessageHistory
 
 from ..search.search_pg_default import pg_search_default, direct_access_doi
 from ..search.publication_qa_tool import answer_publication_questions, PublicationQAArgs
 from ..tools.parallel_search_tool import parallel_search_pangaea, ParallelSearchArgs
-from ..llm_factory import get_llm  # Use the new factory
+from ..llm_factory import get_llm
 
 # Define the arguments schema for the search tool
 class SearchPangaeaArgs(BaseModel):
     query: str = Field(description="The search query string.")
-    count: Optional[int] = Field(default=30, description="Number of results to return (5-100).")
+    count: Optional[int] = Field(default=20, description="Results to return. Default 20 (fast). Max 50.")
     mindate: Optional[str] = Field(default=None, description="The minimum date in 'YYYY-MM-DD' format.")
     maxdate: Optional[str] = Field(default=None, description="The maximum date in 'YYYY-MM-DD' format.")
     minlat: Optional[float] = Field(default=None, description="The minimum latitude in decimal degrees.")
@@ -38,97 +36,198 @@ class ConsolidateResultsArgs(BaseModel):
 
 def consolidate_search_results(all_results_json: str, selection_criteria: str, max_results: int = 15):
     """
-    Consolidates search results by accepting ONLY a list of DOI strings.
-    🚨 CRITICAL: This function ONLY accepts DOI strings, nothing else! 🚨
-    
+    FINAL STEP: Adds collected DOIs to the workspace using the accumulative loader.
+    Uses Shopping Cart strategy - datasets are ADDED to existing workspace.
+
     Args:
-        all_results_json: JSON string containing ONLY an array of DOI strings
-        selection_criteria: Not used anymore, kept for compatibility
+        all_results_json: JSON list of ALL relevant DOIs collected during search
+        selection_criteria: Not used - kept for compatibility
         max_results: Maximum number of results to return
-        
+
     Returns:
-        dict with selected DOIs
+        str: Success message with count
     """
     import json
-    
-    MIN_RESULTS = 20
-    
+    from ..search.search_pg_default import direct_access_doi
+
     try:
-        # Parse the JSON - expecting ONLY a list of DOI strings
-        all_dois = json.loads(all_results_json)
-        
-        # Validate it's a list of strings
-        if not isinstance(all_dois, list):
-            logging.error(f"❌ Expected list of DOI strings, got: {type(all_dois)}")
-            return {
-                "selected_dois": [],
-                "reasoning": "Invalid format - expected list of DOI strings only"
-            }
-        
-        # Ensure all items are strings (DOIs) - reject metadata objects
-        if all_dois and not all(isinstance(doi, str) for doi in all_dois):
-            logging.error("❌ List contains non-string items. Only DOI strings are allowed!")
-            return {
-                "selected_dois": [],
-                "reasoning": "Invalid format - list must contain only DOI strings, no metadata objects"
-            }
-        
-        if not all_dois:
-            return {
-                "selected_dois": [],
-                "reasoning": "No DOIs provided"
-            }
-        
-        logging.info(f"✅ Consolidating DOI list: {len(all_dois)} DOI strings received")
-        
-        # Remove duplicates while preserving order
-        unique_dois = []
-        seen = set()
-        for doi in all_dois:
-            if doi and doi not in seen:
-                seen.add(doi)
-                unique_dois.append(doi)
-        
-        # Simple selection - just take the first N unique DOIs
-        num_to_select = max(MIN_RESULTS, min(max_results, len(unique_dois)))
-        selected_dois = unique_dois[:num_to_select]
-        
-        # Call direct_access_doi to create the table
-        from ..search.search_pg_default import direct_access_doi
-        
-        # Join DOIs with commas
-        dois_string = ', '.join(selected_dois)
-        
-        # This creates the table and stores in session state
-        datasets_info, prompt_text = direct_access_doi(dois_string)
-        
-        reasoning = f"Fast consolidation: Selected {len(selected_dois)} datasets from {len(unique_dois)} unique DOIs"
-        logging.info(f"⚡ {reasoning}")
-        
-        return {
-            "selected_dois": selected_dois,
-            "reasoning": reasoning
-        }
-        
+        # Robust JSON parsing - handle both string and list
+        if isinstance(all_results_json, list):
+            all_dois = all_results_json
+        else:
+            all_dois = json.loads(all_results_json)
+
+        # Filter to valid DOI strings only
+        valid_dois = [d for d in all_dois if isinstance(d, str) and d.strip()]
+
+        if not valid_dois:
+            return "No valid DOIs provided."
+
+        logging.info(f"Consolidating {len(valid_dois)} DOIs into Shopping Cart")
+
+        # Call backend accumulator - THIS IS THE KEY
+        # direct_access_doi now ADDS to the session state (Shopping Cart)
+        datasets_info, msg = direct_access_doi(', '.join(valid_dois))
+
+        # Get total count from session
+        total_count = len(st.session_state.datasets_info) if hasattr(st.session_state, 'datasets_info') and st.session_state.datasets_info is not None else len(valid_dois)
+
+        return f"Success! Added {len(valid_dois)} datasets to Workspace. Total active: {total_count}."
+
     except json.JSONDecodeError as e:
         logging.error(f"JSON decode error: {str(e)}")
-        return {
-            "selected_dois": [],
-            "reasoning": f"Error parsing JSON: {str(e)}"
-        }
+        return f"Error parsing JSON: {str(e)}"
     except Exception as e:
         logging.error(f"Error consolidating results: {str(e)}")
-        return {
-            "selected_dois": [],
-            "reasoning": f"Error during consolidation: {str(e)}"
-        }
+        return f"Error during consolidation: {str(e)}"
     
-# Create the consolidation tool
+# Create the consolidation tool (Shopping Cart "Checkout")
 consolidate_tool = StructuredTool.from_function(
     func=consolidate_search_results,
     name="consolidate_search_results",
-    description="🚨 FAST CONSOLIDATION: Input ONLY a JSON array of DOI strings. Example: '[\"https://doi.org/10.1594/PANGAEA.123456\", \"https://doi.org/10.1594/PANGAEA.789012\"]'. DO NOT input metadata, scores, or objects - ONLY DOI strings! Returns selected DOIs quickly.",
+    description="FINAL STEP (Checkout): Call this when you have found ALL necessary components (e.g., Track + Wind + Ice). Input is a JSON list of all collected DOIs. They will be ADDED to the workspace (Shopping Cart).",
     args_schema=ConsolidateResultsArgs
+)
+
+
+# === SMART FILTER TOOL ===
+class FilterWorkspaceArgs(BaseModel):
+    user_query: str = Field(description="The original user query/request to filter datasets against")
+    max_keep: int = Field(default=15, description="Maximum number of datasets to keep after filtering")
+
+def filter_workspace_datasets(user_query: str, max_keep: int = 15):
+    """
+    FINAL FILTER: Analyzes ALL accumulated datasets and keeps only the most relevant ones.
+    Uses LLM to intelligently score datasets based on Name, Parameters, and Description.
+
+    Args:
+        user_query: The user's original request
+        max_keep: Maximum datasets to keep
+
+    Returns:
+        str: Summary of filtering results
+    """
+    import pandas as pd
+
+    # Check if we have datasets
+    if "datasets_info" not in st.session_state or st.session_state.datasets_info is None:
+        return "No datasets in workspace to filter."
+
+    df = st.session_state.datasets_info
+    if df.empty:
+        return "Workspace is empty."
+
+    total_before = len(df)
+
+    if total_before <= max_keep:
+        return f"Workspace has {total_before} datasets (≤{max_keep}). No filtering needed."
+
+    logging.info(f"Filtering {total_before} datasets down to {max_keep} based on: '{user_query}'")
+
+    # Build scoring prompt for LLM
+    llm = get_llm(temperature=0.0)  # Deterministic for scoring
+
+    # Create dataset summaries for scoring
+    dataset_summaries = []
+    for idx, row in df.iterrows():
+        summary = f"[{idx}] Name: {row.get('Name', 'Unknown')[:100]}"
+        params = row.get('Parameters', '')
+        if params:
+            summary += f" | Params: {str(params)[:80]}"
+        desc = row.get('Short Description', row.get('Description', ''))
+        if desc:
+            summary += f" | Desc: {str(desc)[:100]}"
+        dataset_summaries.append(summary)
+
+    datasets_text = "\n".join(dataset_summaries)
+
+    scoring_prompt = f"""You are a dataset relevance scorer.
+
+USER REQUEST: "{user_query}"
+
+DATASETS IN WORKSPACE:
+{datasets_text}
+
+TASK: Select the {max_keep} MOST RELEVANT datasets for the user's request.
+Consider: dataset name, parameters, and description.
+
+**CONSTRAINT: Try to select NO MORE THAN 10 datasets for the final subset. Exceed this limit ONLY in exceptional cases where more are truly necessary.**
+
+RESPOND WITH ONLY a JSON array of the dataset indices (the numbers in brackets) to KEEP, **ORDERED BY RELEVANCE (most relevant first)**.
+Example: [0, 3, 5, 7, 12]
+
+Keep datasets that:
+- Directly match the topic/region/timeframe requested
+- Have relevant parameters (e.g., if user wants temperature, keep datasets with temperature params)
+- Are primary data (not meta-studies or reference lists)
+- **PRIORITIZE directly downloadable formats (tab-delimited text, CSV, NetCDF) over ZIP archives.**
+
+Remove datasets that:
+- Are unrelated to the request
+- Are duplicates or very similar to better ones
+- Are meta-studies without actual data
+- **ZIP archives/compressed files (unless ABSOLUTELY NO other data exists). PENALIZE ZIPs HEAVILY.**
+
+JSON array of indices to keep (sorted by relevance):"""
+
+    try:
+        from langchain_core.messages import HumanMessage
+        response = llm.invoke([HumanMessage(content=scoring_prompt)])
+
+        # Parse the response to get indices
+        import json
+        import re
+
+        # Extract JSON array from response
+        content = response.content.strip()
+        # Find array pattern
+        match = re.search(r'\[[\d,\s]+\]', content)
+        if match:
+            indices_to_keep = json.loads(match.group())
+        else:
+            # Fallback: try to parse the whole response
+            indices_to_keep = json.loads(content)
+
+        # Validate indices
+        valid_indices = [i for i in indices_to_keep if 0 <= i < len(df)][:max_keep]
+
+        if not valid_indices:
+            logging.warning("LLM returned no valid indices, keeping first N datasets")
+            valid_indices = list(range(min(max_keep, len(df))))
+
+        # Filter the dataframe
+        filtered_df = df.iloc[valid_indices].reset_index(drop=True)
+        filtered_df['Number'] = filtered_df.index + 1
+
+        # Update session state
+        st.session_state.datasets_info = filtered_df
+
+        removed_count = total_before - len(filtered_df)
+
+        # Update UI message
+        st.session_state.messages_search.append({
+            "role": "assistant",
+            "content": f"**Filtered & Sorted:** Kept {len(filtered_df)} most relevant datasets (removed {removed_count}).",
+            "table": filtered_df.to_json(orient="split")
+        })
+
+        logging.info(f"Filtering complete: {total_before} -> {len(filtered_df)} datasets")
+
+        return f"Filtered and SORTED workspace from {total_before} to {len(filtered_df)} datasets. Removed {removed_count} less relevant datasets."
+
+    except Exception as e:
+        logging.error(f"Error during filtering: {e}")
+        # Fallback: just keep first N
+        filtered_df = df.head(max_keep).reset_index(drop=True)
+        filtered_df['Number'] = filtered_df.index + 1
+        st.session_state.datasets_info = filtered_df
+        return f"Fallback filter: Kept first {max_keep} datasets (error in smart filtering: {e})"
+
+filter_workspace_tool = StructuredTool.from_function(
+    func=filter_workspace_datasets,
+    name="filter_workspace",
+    description="MANDATORY FINISHING TOOL: ALWAYS use this at the end of your search workflow to AUTO-SELECT, SORT, and CLEANUP the workspace. It is required to finalize the dataset list. Removes zip files, ranks by relevance, and limits count.",
+    args_schema=FilterWorkspaceArgs
 )
 
 def create_search_agent(datasets_info=None, search_mode="simple"):
@@ -144,120 +243,104 @@ def create_search_agent(datasets_info=None, search_mode="simple"):
 
     # Adjust system prompt based on mode
     if search_mode == "simple":
-        system_prompt = """You are a dataset search assistant for PANGAEA operating in SIMPLE SEARCH MODE.
+        system_prompt = """You are a FAST and EFFICIENT dataset search assistant for PANGAEA.
 
-**Your main goal is to rephrase the user's query into the most effective single Boolean search query by balancing broad and precise terms.**
+**EFFICIENCY RULES (CRITICAL!):**
+- Use `count=20` for searches (good balance of speed and coverage)
+- **Strategy**: Try to perform **at least 2 searches** to ensure coverage, then estimate if more are needed.
+- **Limit**: **MAXIMUM 4 searches**. Usually 2 is sufficient.
+- **Anti-Greed**: Do not be too greedy. Don't try to find every single existing file. Stop when you have a good representative set.
+- **Format Preference**: 🚨 **STRICT RULE: NO ZIP FILES.** Do not select datasets that are just ZIP archives unless it is the ONLY source of data for a critical request. Always prefer processed/tabular data or NetCDF (.nc).
 
-**Boolean Query Refinement Instructions:**
--   **Balance Broad vs. Precise**: Broad keywords (e.g., `zooplankton`) find more results. Precise phrases in quotes (e.g., `"Fram Strait"`) find fewer, more specific results. Your goal is to blend these techniques for the best outcome.
--   **Use Boolean Operators**: `AND`, `OR`, `NOT`, and `()` for grouping.
--   **Infer and Add Synonyms**: When using a precise phrase, add synonyms with `OR` to avoid missing data, like `("sea surface temperature" OR SST)`. An excellent general-purpose addition is `(temperature OR CTD)`.
+**SHOPPING CART:**
+- Each search ADDS to workspace (accumulates)
+- If user needs 2 data types → 2 searches max
+- Simple requests → 1-2 searches are enough!
 
--   **Think Like a Scientist (Infer Methods & Instruments)**: Go beyond just keywords. Think about *how* the data was collected. Add common instrument acronyms or collection methods with `OR`.
-    -   For `temperature` or `salinity` -> consider adding `CTD`.
-    -   For `ocean currents` -> consider adding `ADCP` or `mooring`.
-    -   For `sediment samples` -> consider adding `core` or `gravity core`.
-    -   For `phytoplankton` -> consider adding `chlorophyll` or `fluorometer`.
+**SMART QUERIES:**
+- Use Boolean: `AND`, `OR`, `NOT`, `()`
+- Add synonyms: `(temperature OR CTD)`, `(SST OR "sea surface temperature")`
+- Be specific: `"MOSAiC" AND track` not just `MOSAiC`
 
-**Intelligent Spatial Awareness:**
--   If the user mentions a geographic region (e.g., "Fram Strait", "Arctic Ocean"), you must **estimate the bounding box (min/max latitude and longitude)** for that region.
--   **CRITICAL**: To avoid missing data at the edges, always add a **buffer of +-2 degrees** to your estimated coordinates. For example, if you estimate a region is from 78°N to 80°N, you should search from 76°N to 82°N.
--   Pass these buffered coordinates to the `minlat`, `maxlat`, `minlon`, `maxlon` parameters in your tool call.
--   **IMPORTANT**: If you use spatial coordinates, **remove the region's name** (e.g., 'Arctic') from the keyword query to avoid redundant filtering. The coordinate search is more precise.
+**SPATIAL/TEMPORAL:**
+- Region mentioned → estimate bbox with +-2° buffer
+- Timeframe mentioned → convert to YYYY-MM-DD with +-1 year buffer
 
-**Intelligent Temporal Awareness:**
--   If the user mentions a relative timeframe (e.g., "the 90s", "last year", "summer 2022"), you must convert this into `YYYY-MM-DD` format for the `mindate` and `maxdate` parameters.
--   **CRITICAL**: Always add a generous **buffer of approximately 1 year** to the start and end of your estimated date range to prevent missing datasets that span across year boundaries. For example, for a query about 'data from 2015', a safe search range would be `mindate: 2014-01-01` and `maxdate: 2016-12-31`.
+**WORKFLOW:**
+1. Analyze request → start with ~2 diverse searches (e.g. synonyms or different aspects).
+2. Execute searches.
+3. **Decide on the way**: Check results. Need more? (Max 4 total).
+4. **MANDATORY FINAL STEP**: You **MUST** use `filter_workspace` to AUTO-SELECT and SORT the best datasets. **DO NOT SKIP THIS.**
+   - Even if you have few results, this sorts them by relevance.
+   - **NEVER** finish without running this tool if you found data.
+5. **TERMINATE IMMEDIATELY**: After running `filter_workspace`, STOP. Do NOT run `answer_publication_questions` or any other tool. Do NOT "summarize" with another tool call. Just provide your final text response.
 
-**Examples:**
--   **User Query:** "I need temperature and salinity data from the Arctic."
--   **Your Refined Search Query:** `(temperature OR CTD) AND salinity AND Arctic`
+**TERMINATION CONDITION:**
+- IF you have run `filter_workspace` -> STOP.
+- IF you have executed 4 searches -> STOP and run `filter_workspace`.
+- DO NOT loop. DO NOT try to be "helpful" by running extra tools at the end.
 
--   **User Query:** "Find me zooplankton data, but not from the Mediterranean."
--   **Your Refined Search Query:** `zooplankton NOT Mediterranean`
+**EXAMPLES:**
+- "Find Arctic temperature data" → 1 search: `(temperature OR CTD) AND Arctic`, count=20
+- "MOSAiC track and wind" → 2 searches: `MOSAiC track`, then `MOSAiC wind`
+- "Zooplankton Fram Strait" → 1 search: `zooplankton AND "Fram Strait"`, count=20
 
--   **User Query:** "Search for data on gelatinous zooplankton in the Fram Strait"
--   **Your Refined Search Query:** `(gelatinous zooplankton) AND "Fram Strait"` *(This balances a broad search for the subject with a precise search for the location, which is a good strategy)*
+**DOI provided?** → Use `direct_access_doi` directly, skip search.
 
-**Your Workflow:**
-1.  Take the user's request.
-2.  Create a single, effective Boolean search query using the principles above.
-3.  If a region is mentioned, estimate its bounding box, add a buffer, and update the query accordingly.
-4.  Use the `search_pg_datasets` tool with your refined query and spatial parameters.
-5.  If the user provides a DOI, use the `direct_access_doi` tool.
-6.  After the tool runs, briefly summarize the result. The system will display a table automatically, so do not list the datasets yourself.
+**Too many results?** → `filter_workspace` keeps only the best.
 """
     else:
-        # Use the existing enhanced multi-search prompt with parallel search capabilities
-        system_prompt = """You are an intelligent dataset search assistant for PANGAEA with advanced parallel search capabilities.
+        # DEEP MODE: EFFICIENT PARALLEL SEARCH
+        system_prompt = """You are an EFFICIENT Research Data Scout for PANGAEA.
 
-    **YOUR CORE CAPABILITIES:**
-1. **Parallel Multi-Search Strategy**: You can run multiple searches SIMULTANEOUSLY for 3-5x faster results
-2. **Intelligent Query Refinement**: You reformulate queries to maximize relevant results
-3. **Dynamic Result Count**: You decide how many results to fetch based on query complexity (5-50 per search)
-4. **Result Consolidation**: You analyze all results and select the best 30 datasets
+**EFFICIENCY RULES (CRITICAL!):**
+- Use `count_per_query=20` for parallel searches
+- **MAX 2-3 query variations** in parallel_search_pangaea - quality over quantity!
+- Don't overthink - execute quickly
+- One well-crafted parallel search beats multiple sequential ones
 
-**SEARCH STRATEGY GUIDELINES:**
+**PARALLEL SEARCH STRATEGY:**
+Use `parallel_search_pangaea` with 2-3 smart query variations:
+- Example: `["MOSAiC track position", "MOSAiC drift trajectory", "PS122 navigation"]`
+- Each query tests a different angle/synonym
+- count_per_query=20 for each
 
-Your primary goal is to rephrase the user's request into a **balanced portfolio of 2-5 parallel Boolean search queries.**
+**SMART QUERIES:**
+- Boolean: `AND`, `OR`, `NOT`, `()`
+- Synonyms: `(temperature OR CTD)`, `(track OR trajectory OR position)`
+- Instruments: temperature→CTD, currents→ADCP, sediments→core
 
--   **Achieve Balance (Broad vs. Precise)**: This is critical. Create a mix of queries.
-    -   **Broad Queries**: Use keywords without quotes to find more results (e.g., `zooplankton AND Fram Strait`). This increases recall.
-    -   **Precise Queries**: Use quotes `""` for exact phrases to find highly specific results (e.g., `"zooplankton biomass"`). This increases precision.
-    A good strategy includes at least one of each type.
+**SPATIAL/TEMPORAL:**
+- Region → bbox with +-2° buffer, remove region name from query
+- Timeframe → YYYY-MM-DD with +-1 year buffer
 
--   **Use Powerful Boolean Logic**:
-    -   `AND`: To ensure all terms are present.
-    -   `OR`: To include synonyms or related concepts (e.g., `(temperature OR CTD)`).
-    -   `NOT`: To exclude irrelevant terms (e.g., `plankton NOT phytoplankton`).
-    -   `()`: To group terms and control the logic.
--   **Combine Quotes with OR for Synonyms**: When you use a restrictive exact phrase like `"sea surface temperature"`, consider creating a parallel query that broadens it with an acronym, like `("sea surface temperature" OR SST)`.
+**WORKFLOW:**
+1. Analyze request → plan 2-3 query variations
+2. `parallel_search_pangaea` with queries, count_per_query=20
+3. Review results → `consolidate_search_results` with best DOIs
+4. **MANDATORY FINAL STEP**: You **MUST** use `filter_workspace` to SORT and rank the consolidated list. **DO NOT STOP** until this tool has run.
+5. **TERMINATE IMMEDIATELY**: After running `filter_workspace`, STOP. Do NOT run `answer_publication_questions` or any other tool. Do NOT "summarize" with another tool call. Just provide your final text response.
 
--   **Think Like a Scientist (Infer Methods & Instruments)**: Go beyond just keywords. Think about *how* the data was collected. Add common instrument acronyms or collection methods with `OR`.
-    -   For `temperature` or `salinity` -> consider adding `CTD`.
-    -   For `ocean currents` -> consider adding `ADCP` or `mooring`.
-    -   For `sediment samples` -> consider adding `core` or `gravity core`.
-    -   For `phytoplankton` -> consider adding `chlorophyll` or `fluorometer`.
+**TERMINATION CONDITION:**
+- IF you have run `filter_workspace` -> STOP.
+- DO NOT loop. DO NOT try to be "helpful" by running extra tools at the end.
 
-**Search Anti-Patterns to Avoid:**
--   **Redundant Queries**: Do not create parallel queries that are too similar (e.g., `["zooplankton", "zooplanktons"]`). Each query should test a different concept or combination.
--   **Overly Broad Queries**: Avoid single-word queries like `["data"]` or `["ocean"]` as they are not useful. Every query should have at least two focused concepts connected by `AND`.
--   **Contradictory Queries**: Do not create queries that contradict each other, like using `NOT mediterranean` in one and `"Mediterranean Sea"` in another unless you are explicitly testing boundaries.    
+**EXAMPLE - "MOSAiC drift analysis":**
+```
+parallel_search_pangaea(
+  search_queries=["MOSAiC track position", "MOSAiC drift ice", "PS122 navigation"],
+  count_per_query=20
+)
+→ consolidate_search_results with best DOIs
+→ filter_workspace if needed
+```
 
-**Intelligent Spatial Awareness:**
--   If the user mentions a geographic region (e.g., "Fram Strait", "Arctic Ocean"), you must **estimate the bounding box (min/max latitude and longitude)** for that region.
--   **CRITICAL**: To avoid missing data at the edges, always add a **buffer of +-2 degrees** to your estimated coordinates. For example, if you estimate a region is from 78°N to 80°N, you should search from 76°N to 82°N.
--   Pass these buffered coordinates to the `minlat`, `maxlat`, `minlon`, `maxlon` parameters in your tool call.
--   **IMPORTANT**: If you use spatial coordinates, **remove the region's name** (e.g., 'Arctic') from the keyword query to avoid redundant filtering. The coordinate search is more precise.
+**DOI provided?** → `direct_access_doi` directly.
 
-**Intelligent Temporal Awareness:**
--   If the user mentions a relative timeframe (e.g., "the 90s", "last year", "summer 2022"), you must convert this into `YYYY-MM-DD` format for the `mindate` and `maxdate` parameters.
--   **CRITICAL**: Always add a generous **buffer of approximately 1 year** to the start and end of your estimated date range to prevent missing datasets that span across year boundaries. For example, for a query about 'data from 2015', a safe search range would be `mindate: 2014-01-01` and `maxdate: 2016-12-31`.
-
-**PARALLEL SEARCH EXECUTION PROCESS:**
-1. Analyze the user query to identify key concepts and spatial regions.
-2. Plan 2-5 search **balanced Boolean query** variations based on the guidelines above.
-3. If a region was identified, estimate its buffered bounding box and update queries accordingly.
-4. Use parallel_search_pangaea tool with your list of Boolean search strings and spatial parameters.
-5. The tool returns datasets with metadata AND DOI list from parallel execution.
-6. Extract the DOI list from results and use consolidate_search_results tool.
-7. The consolidation tool will return selected DOIs - the system handles the rest.
-
-**🚨 CRITICAL: parallel_search_pangaea INPUT FORMAT 🚨**
-- INPUT: List of search query strings like ["(temperature OR CTD) AND arctic", "salinity AND \"2020\""]
-- DO NOT input DOIs, full descriptions, or complete sentences
-- Keep queries focused on Boolean logic and keywords.
-
-**🚀 PARALLEL SEARCH ADVANTAGES:**
-- 3-5x faster than sequential searches
-- Real-time progress tracking
-- Automatic deduplication of results
-- Comprehensive coverage with a mix of broad and precise strategies
-
-**TOOL SELECTION:**
-- Use parallel_search_pangaea for multiple related queries (2-5 variations)
-- Use search_pg_datasets for single queries or when you need very specific control
-- Always prefer parallel_search_pangaea in deep search mode for better performance
+**AVOID:**
+- More than 3-4 parallel queries (diminishing returns)
+- Redundant queries (`zooplankton`, `zooplanktons`)
+- Too broad (`ocean data`) or too narrow
 
 **🚨 CRITICAL: CONSOLIDATION ONLY ACCEPTS DOI STRINGS! 🚨**
 
@@ -288,6 +371,7 @@ The parallel_search_pangaea tool returns:
    - ❌ EXCLUDE: Wrong location (even if high scored)
    - ❌ EXCLUDE: Wrong domain (sediments when user wants biology)
    - ❌ EXCLUDE: Meta-studies or reference lists
+   - ❌ **HARD EXCLUDE**: ZIP archives (unless completely unavoidable). We cannot easily process them. Look for 'tab-delimited', 'csv', 'text', or 'NetCDF' (.nc) versions instead.
 
 **EXAMPLE - Gelatinous Zooplankton in Fram Strait:**
 - ✅ "Gelatinous zooplankton annotations Fram Strait" → INCLUDE (perfect match, ignore score)
@@ -295,12 +379,20 @@ The parallel_search_pangaea tool returns:
 - ❌ "Aliphatic lipids in sediments" → EXCLUDE (wrong domain, even if score 90)
 - ❌ "Reference list of IPY supplements" → EXCLUDE (not real data, even if score 100)
 
-**CONSOLIDATION WORKFLOW - FOLLOW EXACTLY:**
+**CONSOLIDATION WORKFLOW - FOLLOW EXACTLY (Shopping Cart):**
 1. Execute parallel_search_pangaea with your balanced Boolean keyword queries.
 2. Get results and examine `all_datasets` for CONTENT (ignore scores)
 3. Build your own DOI list of ACTUALLY RELEVANT datasets
 4. Pass ONLY this curated DOI list to consolidate_search_results. Preferably with at least 10-15 DOIs.
-5. IMPORTANT: After consolidation, write ONLY a brief 3-4 sentence summary since the system automatically displays all datasets in a table. DO NOT list or enumerate the DOIs again - this creates annoying double display for the user!
+5. **SHOPPING CART**: New datasets are ADDED to the workspace, not replacing old ones!
+6. **SMART FILTER**: If workspace has >15-20 datasets, call `filter_workspace` to keep only the best!
+7. IMPORTANT: After work complete, write ONLY a brief 3-4 sentence summary. DO NOT list DOIs - creates double display!
+
+**SMART FILTERING (USE WHEN WORKSPACE HAS MANY DATASETS):**
+- Call `filter_workspace(user_query="original request", max_keep=15)` at the END
+- The filter uses AI to analyze Name, Parameters, Description
+- Keeps most relevant, removes duplicates and irrelevant results
+- ALWAYS use if you accumulated >20 datasets!
 
 **CORRECT FORMAT FOR CONSOLIDATION:**
 ```json
@@ -335,14 +427,37 @@ The parallel_search_pangaea tool returns:
             st.session_state.search_results_cache = {}
         st.session_state.search_results_cache[search_id] = datasets_info
         
-        # For simple mode, immediately store in session state and create table
+        # For simple mode, use Shopping Cart accumulation logic
         if st.session_state.get("search_mode") == "simple" and not datasets_info.empty:
-            st.session_state.datasets_info = datasets_info
+            # --- SHOPPING CART: Accumulate instead of replace ---
+            existing_dois = set()
+            if "datasets_info" in st.session_state and isinstance(st.session_state.datasets_info, pd.DataFrame):
+                if not st.session_state.datasets_info.empty:
+                    existing_dois = set(st.session_state.datasets_info['DOI'].tolist())
+
+            # Filter out duplicates from new results
+            new_datasets = datasets_info[~datasets_info['DOI'].isin(existing_dois)]
+            num_new = len(new_datasets)
+
+            if existing_dois and num_new > 0:
+                # Merge with existing
+                combined = pd.concat([st.session_state.datasets_info, new_datasets], ignore_index=True)
+                combined['Number'] = combined.index + 1
+                st.session_state.datasets_info = combined
+                msg = f"**Search completed:** Added {num_new} new datasets. Total in workspace: {len(combined)}."
+            elif existing_dois and num_new == 0:
+                msg = f"**Search completed:** Found {len(datasets_info)} datasets (all already in workspace)."
+            else:
+                datasets_info['Number'] = datasets_info.index + 1
+                st.session_state.datasets_info = datasets_info
+                msg = f"**Search completed:** Found {len(datasets_info)} datasets."
+
             st.session_state.messages_search.append({
                 "role": "assistant",
-                "content": f"**Search completed:** Found {len(datasets_info)} datasets.",
-                "table": datasets_info.to_json(orient="split")
+                "content": msg,
+                "table": st.session_state.datasets_info.to_json(orient="split")
             })
+            # ----------------------------------------------------
         
         # Create LIGHTWEIGHT result for consolidation (only DOIs and scores)
         lightweight_datasets = []
@@ -409,11 +524,11 @@ The parallel_search_pangaea tool returns:
     
     # After creating the tools, conditionally include consolidation and parallel search
     if search_mode == "simple":
-        # Simple mode: exclude consolidation and parallel search tools
-        tools = [search_tool, publication_qa_tool, direct_doi_access_tool]
+        # Simple mode: search + filter tools
+        tools = [search_tool, filter_workspace_tool, publication_qa_tool, direct_doi_access_tool]
     else:
-        # Deep mode: include all tools including consolidation and parallel search
-        tools = [search_tool, parallel_search_tool, consolidate_tool, publication_qa_tool, direct_doi_access_tool]
+        # Deep mode: include all tools including consolidation, parallel search, and filter
+        tools = [search_tool, parallel_search_tool, consolidate_tool, filter_workspace_tool, publication_qa_tool, direct_doi_access_tool]
 
     # Bind tools to LLM
     llm_with_tools = llm.bind_tools(tools)
@@ -421,8 +536,9 @@ The parallel_search_pangaea tool returns:
     # Create agent
     agent = create_openai_tools_agent(llm, tools, prompt)
 
-    # Adjust max_iterations based on mode
-    max_iterations = 5 if search_mode == "simple" else 15
+    # Efficient iterations - don't waste time
+    # Simple: 8 iterations (1-3 searches + filter), Deep: 12 iterations
+    max_iterations = 8 if search_mode == "simple" else 12
     
     # Create agent executor with increased iterations for multi-search
     agent_executor = AgentExecutor(
@@ -437,96 +553,87 @@ The parallel_search_pangaea tool returns:
 
     return agent_executor
 
-def process_search_query(user_input: str, search_agent, session_data: dict):
+def process_search_query(user_input: str, search_agent: AgentExecutor, session_data: dict):
     """
-    Processes a user search query using the enhanced multi-search agent.
+    Processes a user search query using the search agent.
+    Direct invocation like data page agents - NO RunnableWithMessageHistory!
     """
-    # Initialize or reset chat history
-    session_data["chat_history"] = ChatMessageHistory(session_id="search-agent-session")
-    
-    # Populate chat history
-    for message in session_data["messages_search"]:
+    logging.info(f"Starting search process for query: {user_input}")
+
+    # Build chat history from session messages (last 10 messages for context)
+    chat_history: List[HumanMessage | AIMessage] = []
+    recent_messages = session_data.get("messages_search", [])[-10:]
+
+    for message in recent_messages:
         if message["role"] == "user":
-            session_data["chat_history"].add_user_message(message["content"])
+            chat_history.append(HumanMessage(content=message["content"]))
         elif message["role"] == "assistant":
-            session_data["chat_history"].add_ai_message(message["content"])
+            # Skip table messages, only keep text content
+            content = message.get("content", "")
+            if content and not message.get("table"):
+                chat_history.append(AIMessage(content=content))
 
-    # Create truncated history function
-    def get_truncated_chat_history(session_id):
-        truncated_messages = session_data["chat_history"].messages[-20:]
-        truncated_history = ChatMessageHistory(session_id=session_id)
-        
-        for msg in truncated_messages:
-            if isinstance(msg, HumanMessage):
-                truncated_history.add_user_message(msg.content)
-            elif isinstance(msg, AIMessage):
-                truncated_history.add_ai_message(msg.content)
-            else:
-                truncated_history.add_message(msg)
-                
-        return truncated_history
-
-    # Create agent with memory
-    search_agent_with_memory = RunnableWithMessageHistory(
-        search_agent,
-        get_truncated_chat_history,
-        input_messages_key="input",
-        history_messages_key="chat_history",
-    )
-
-    # Log the search execution
-    logging.info(f"Starting multi-search process for query: {user_input}")
-    
-    # Invoke agent
-    response = search_agent_with_memory.invoke(
-        {"input": user_input},
-        {"configurable": {"session_id": "search-agent-session"}},
-    )
+    # Direct agent invocation - like data page agents!
+    try:
+        response = search_agent.invoke({
+            "input": user_input,
+            "chat_history": chat_history
+        })
+    except Exception as e:
+        logging.error(f"Search agent error: {e}")
+        return f"Search error: {str(e)}"
 
     # Extract response and intermediate steps
-    ai_message = response["output"]
+    ai_message = response.get("output", "Search completed.")
     intermediate_steps = response.get("intermediate_steps", [])
-    
-    # Log search statistics
-    search_count = sum(1 for step in intermediate_steps if step[0].tool == "search_pg_datasets")
-    consolidation_count = sum(1 for step in intermediate_steps if step[0].tool == "consolidate_search_results")
-    
-    logging.info(f"Completed multi-search with {search_count} searches and {consolidation_count} consolidations")
-    
-    # Find consolidation results - these are just DOIs
-    selected_dois = []
+
+    # Log search statistics and extract queries
+    search_count = 0
+    filter_count = 0
+    executed_queries = []
+
     for step in intermediate_steps:
-        if step[0].tool == "consolidate_search_results" and isinstance(step[1], dict):
-            selected_dois = step[1].get('selected_dois', [])
-            break
-    
-    if selected_dois:
-        # USE DIRECT_ACCESS_DOI TO CREATE THE TABLE!
-        from ..search.search_pg_default import direct_access_doi
-        
-        # Join DOIs with commas (direct_access_doi expects comma-separated string)
-        dois_string = ', '.join(selected_dois)
-        
-        # Call direct_access_doi - it will create the table and store in session state
-        datasets_info, prompt_text = direct_access_doi(dois_string)
-        
-        # Return mode-specific message
-        if session_data.get("search_mode") == "deep":
-            return f"✅ **Deep search completed:** Executed {search_count} search variations and selected {len(selected_dois)} best results."
-        else:
-            return f"✅ **Search completed:** Found {len(selected_dois)} datasets."
-    
-    # Ensure simple mode creates a table if search was performed but no consolidation
-    if session_data.get("search_mode") == "simple" and search_count > 0:
-        # Check if we already have a table message
-        has_table = any("table" in msg for msg in session_data["messages_search"])
-        
-        if not has_table and session_data.get("datasets_info") is not None:
-            # Add a table message for simple search results
-            session_data["messages_search"].append({
-                "role": "assistant", 
-                "content": "**Search results:**",
-                "table": session_data["datasets_info"].to_json(orient="split")
-            })
-    
+        if hasattr(step[0], 'tool'):
+            tool_name = step[0].tool
+            tool_input = step[0].tool_input
+            
+            if tool_name == "search_pg_datasets":
+                search_count += 1
+                query = tool_input.get('query', 'Unknown')
+                executed_queries.append(f"'{query}'")
+            elif tool_name == "parallel_search_pangaea":
+                search_count += 1
+                queries = tool_input.get('search_queries', [])
+                if isinstance(queries, list):
+                    executed_queries.extend([f"'{q}'" for q in queries])
+                else:
+                    executed_queries.append(f"'{str(queries)}'")
+            elif tool_name == "filter_workspace":
+                filter_count += 1
+
+    logging.info(f"Search completed: {search_count} searches, {filter_count} filters")
+
+    # Check workspace status
+    workspace_count = 0
+    if "datasets_info" in session_data and session_data["datasets_info"] is not None:
+        if isinstance(session_data["datasets_info"], pd.DataFrame):
+            workspace_count = len(session_data["datasets_info"])
+
+    # Append executed queries to the message
+    if executed_queries:
+        queries_str = ", ".join(executed_queries)
+        ai_message += f"\n\n**Executed Searches:** {queries_str}"
+
+    # Add summary to response if we have datasets
+    if workspace_count > 0:
+        summary = f"\n\n**Workspace:** {workspace_count} datasets accumulated."
+        if search_count > 1:
+            summary = f"\n\n**Completed {search_count} searches.** Workspace: {workspace_count} datasets."
+        if filter_count > 0:
+            summary += f" (filtered)"
+
+        # Don't duplicate if already in message
+        if "Workspace" not in ai_message and "datasets" not in ai_message.lower():
+            ai_message += summary
+
     return ai_message

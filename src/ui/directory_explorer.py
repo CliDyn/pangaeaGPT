@@ -6,9 +6,12 @@ Displays directory contents for plotting data and sandbox directories
 
 import os
 import streamlit as st
+import pandas as pd
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+from ..utils.workspace import WorkspaceManager
 
 
 def get_directory_tree(path: str, max_depth: int = 5, current_depth: int = 0) -> Dict:
@@ -248,24 +251,41 @@ def collect_files(node: Dict, files_list: List[Dict]) -> None:
 
 def get_current_sandbox_path(session_state: Dict) -> Optional[str]:
     """
-    Extract the current sandbox directory path from session state.
-    
-    Args:
-        session_state: Streamlit session state
-        
-    Returns:
-        str or None: Path to current sandbox directory
+    Extract the current sandbox directory path using WorkspaceManager.
     """
-    if "active_datasets" in session_state and session_state["active_datasets"]:
-        # Get the first active dataset's path
-        first_doi = next(iter(session_state["active_datasets"]))
-        cached_data = session_state["datasets_cache"].get(first_doi)
-        if cached_data and cached_data[0]:
-            dataset_path = cached_data[0]
-            if isinstance(dataset_path, str) and os.path.isdir(dataset_path):
-                # Get the parent sandbox directory
-                return os.path.dirname(os.path.abspath(dataset_path))
-    return None
+    path = WorkspaceManager.get_sandbox_path()
+    return path if os.path.exists(path) else None
+
+
+def render_active_datasets_list() -> None:
+    """
+    Renders the "Shopping Cart" of accumulated datasets.
+    Shows all datasets currently loaded in the workspace with quick actions.
+    """
+    if "datasets_info" in st.session_state and isinstance(st.session_state.datasets_info, pd.DataFrame) and not st.session_state.datasets_info.empty:
+        df = st.session_state.datasets_info
+        st.success(f"**Active Workspace:** {len(df)} datasets loaded")
+
+        # Compact expander list showing accumulated datasets
+        for i, row in df.iterrows():
+            # Truncate long names for display
+            display_name = row['Name'][:60] + "..." if len(str(row['Name'])) > 60 else row['Name']
+            with st.expander(f"#{i+1}: {display_name}", expanded=False):
+                st.markdown(f"**DOI:** `{row['DOI']}`")
+                params = row.get('Parameters', '')
+                if params:
+                    st.caption(f"**Params:** {str(params)[:100]}...")
+
+        # Clear workspace button
+        if st.button("Clear Workspace", key="clear_workspace_btn_explorer"):
+            st.session_state.datasets_info = None
+            st.session_state.messages_search.append({
+                "role": "assistant",
+                "content": "Workspace cleared."
+            })
+            st.rerun()
+    else:
+        st.info("Workspace empty. Search and select datasets to accumulate them here.")
 
 
 def render_directory_explorer() -> None:
@@ -276,8 +296,15 @@ def render_directory_explorer() -> None:
     # --- Directory Explorer Section ---
     st.markdown("---")  # Separator
 
+    # --- SHOPPING CART: Active Datasets List ---
+    st.subheader("Active Datasets (Workspace)")
+    st.caption("Datasets accumulate here across multiple searches - like a shopping cart")
+    render_active_datasets_list()
+
+    st.markdown("---")
+
     # Directory Explorer header
-    st.subheader("📁 Directory Explorer")
+    st.subheader("File Explorer")
     st.caption("View the contents of the plotting data folder and current sandbox directory")
 
     # Get current sandbox directory

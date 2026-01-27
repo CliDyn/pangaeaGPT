@@ -8,6 +8,8 @@ from langchain_community.vectorstores import Chroma
 from langchain_anthropic import ChatAnthropic
 import streamlit as st
 
+from ..utils.workspace import WorkspaceManager
+
 class ExampleVisualizationArgs(BaseModel):
     query: str = Field(description="The user's query about plotting.")
 
@@ -86,57 +88,30 @@ def list_plotting_data_files(dummy_arg: str = "") -> str:
                 # Keep this as a relative path
                 all_files.append(f"STATIC: {full_path}")
     
-    # Part 2: List all files from UUID sandbox directories
-    if "active_datasets" in st.session_state and st.session_state["active_datasets"]:
-        # Find all unique UUID sandbox parent directories
-        sandbox_dirs = set()
-        for doi in st.session_state["active_datasets"]:
-            dataset_path, _ = st.session_state["datasets_cache"].get(doi, (None, None))
-            if isinstance(dataset_path, str) and os.path.isdir(dataset_path):
-                # Get the parent sandbox UUID directory
-                parent_dir = os.path.dirname(os.path.abspath(dataset_path))
-                sandbox_dirs.add(parent_dir)
+    # Part 2: Session files via Manager
+    sandbox_dir = WorkspaceManager.get_sandbox_path()
 
-        # List all files from each UUID directory recursively
-        for sandbox_dir in sandbox_dirs:
-            if os.path.exists(sandbox_dir):
-                for root, dirs, files in os.walk(sandbox_dir):
-                    # --- SMART ZARR HANDLING ---
-                    # Treat directories ending in .zarr as single files
-                    zarr_dirs = [d for d in dirs if d.endswith('.zarr')]
-                    for zarr_dir in zarr_dirs:
-                        full_path = os.path.join(root, zarr_dir)
-                        if full_path.startswith(cwd):
-                            rel_path = full_path[len(cwd)+1:]
-                        else:
-                            rel_path = full_path
-                        rel_path = rel_path.replace('\\', '/')
+    if os.path.exists(sandbox_dir):
+        for root, dirs, files in os.walk(sandbox_dir):
+            # SMART ZARR HANDLING logic
+            zarr_dirs = [d for d in dirs if d.endswith('.zarr')]
+            for z_dir in zarr_dirs:
+                full = os.path.join(root, z_dir)
+                rel = os.path.relpath(full, sandbox_dir).replace('\\', '/')
+                all_files.append(f"📦 {rel} (Zarr)")
+                dirs.remove(z_dir)
 
-                        if "era5_data" in rel_path:
-                            all_files.append(f"ERA5 (Zarr Store): {rel_path}")
-                        else:
-                            all_files.append(f"DATA (Zarr Store): {rel_path}")
+            for filename in files:
+                full_path = os.path.join(root, filename)
+                # Make relative to sandbox root for clean display
+                rel_path = os.path.relpath(full_path, sandbox_dir).replace('\\', '/')
 
-                        # Stop recursing into this dir
-                        dirs.remove(zarr_dir)
-                    # ---------------------------
-
-                    for filename in files:
-                        full_path = os.path.join(root, filename)
-                        # Convert to relative path by removing the cwd prefix
-                        if full_path.startswith(cwd):
-                            rel_path = full_path[len(cwd)+1:]  # +1 to remove leading slash
-                        else:
-                            rel_path = full_path
-
-                        # Use consistent forward slashes
-                        rel_path = rel_path.replace('\\', '/')
-
-                        # Include a prefix to distinguish ERA5 files
-                        if "era5_data" in rel_path:
-                            all_files.append(f"ERA5: {rel_path}")
-                        else:
-                            all_files.append(f"DATA: {rel_path}")
+                if "era5_data" in rel_path:
+                    all_files.append(f"ERA5: {rel_path}")
+                elif "copernicus_data" in rel_path:
+                    all_files.append(f"COPERNICUS: {rel_path}")
+                else:
+                    all_files.append(f"DATA: {rel_path}")
     
     # Return a simple list of all available files
     if all_files:

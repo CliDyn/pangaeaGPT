@@ -9,6 +9,7 @@ from typing import Optional, Literal
 from langchain_core.tools import StructuredTool
 
 from ..config import ARRAYLAKE_API_KEY
+from ..utils.workspace import WorkspaceManager
 
 # --- IMPORTS & CONFIGURATION ---
 try:
@@ -117,24 +118,16 @@ def retrieve_era5_data(
         short_var = VARIABLE_MAPPING.get(variable_id.lower(), variable_id)
         logging.info(f"Mapped requested variable '{variable_id}' to '{short_var}'")
 
-        # 3. Setup Sandbox Path
-        main_dir = None
-        if "streamlit" in sys.modules and hasattr(st, 'session_state'):
-            thread_id = st.session_state.get("thread_id")
-            if thread_id:
-                main_dir = os.path.join("tmp", "sandbox", thread_id)
-        
-        if not main_dir:
-            main_dir = os.path.join("tmp", "sandbox", "era5_earthmover")
-        
-        os.makedirs(main_dir, exist_ok=True)
-        era5_dir = os.path.join(main_dir, "era5_data")
-        os.makedirs(era5_dir, exist_ok=True)
+        # 3. Setup Sandbox Path using WorkspaceManager
+        era5_dir = WorkspaceManager.get_data_dir(subfolder="era5_data")
+        logging.info(f"Using ERA5 directory: {era5_dir}")
 
-        # 4. Generate Filename and Check Cache
+        # 4. Generate Filename
         zarr_dirname = _generate_descriptive_filename(short_var, query_type, start_date, end_date)
         local_zarr_path = os.path.join(era5_dir, zarr_dirname)
-        relative_path = os.path.join("era5_data", zarr_dirname) # For the agent to use
+
+        # Relative path for the agent to use in Python code
+        relative_path = os.path.join("era5_data", zarr_dirname).replace("\\", "/")
 
         if os.path.exists(local_zarr_path):
             logging.info(f"⚡ Cache hit: {local_zarr_path}")
@@ -241,15 +234,15 @@ era5_retrieval_tool = StructuredTool.from_function(
     name="retrieve_era5_data",
     description=(
         "Retrieves ERA5 Surface climate data from Earthmover (Arraylake). "
-        "⚠️ CRITICAL: You MUST specify 'query_type' based on user intent. "
-        "1. Use `query_type='temporal'` for TIME-SERIES graphs at specific locations (fast time slicing). "
-        "2. Use `query_type='spatial'` for MAPS over regions (fast spatial slicing). "
+        "⚠️ CRITICAL: You MUST specify 'query_type' correctly - WRONG CHOICE = 10-100x SLOWER! "
+        "Use `query_type='temporal'` when: time period > 1 day AND region < 20°×20°. "
+        "Use `query_type='spatial'` when: time period ≤ 1 day OR region > 30°×30°. "
+        "Examples: 'temperature over 6 months for Berlin' → temporal. 'Europe map for today' → spatial. "
         "Returns a Zarr directory path (use xr.open_dataset(path, engine='zarr') to open). "
         "Available vars: t2 (temp), sst, u10/v10 (wind), mslp (pressure), etc."
     ),
     args_schema=ERA5RetrievalArgs
 )
-
 
 # # src/tools/era5_retrieval_tool.py
 # """

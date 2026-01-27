@@ -13,6 +13,8 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 from tqdm.auto import tqdm
 
+from ..utils.workspace import WorkspaceManager
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -99,7 +101,7 @@ def download_pangaea_dataset(doi_url, output_dir):
     # --- METHOD 1: Find the 'static-download-link' on the page ---
     logging.info(f"Step 1: Attempting to find static download link at {pangaea_url}")
     try:
-        response = requests.get(pangaea_url)
+        response = requests.get(pangaea_url, timeout=30)
         response.raise_for_status()
         
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -138,7 +140,7 @@ def download_pangaea_dataset(doi_url, output_dir):
         local_file_path = os.path.join(output_dir, filename)
         
         logging.info(f"Step 3: Downloading file from {download_url} to {local_file_path}")
-        with requests.get(download_url, stream=True) as r:
+        with requests.get(download_url, stream=True, timeout=60) as r:
             r.raise_for_status()
             total_size = int(r.headers.get('content-length', 0))
             with open(local_file_path, 'wb') as f:
@@ -192,15 +194,15 @@ def fetch_dataset(doi, target_dir=None):
     """
     logging.info(f"Starting fetch_dataset for DOI: {doi}")
 
-    # If target_dir not provided, create a new sandbox (for backward compatibility)
+    # --- USE WORKSPACE MANAGER ---
     if target_dir is None:
-        unique_id = str(uuid.uuid4())
-        target_dir = os.path.join("tmp", "sandbox", unique_id)
-        os.makedirs(target_dir, exist_ok=True)
-        logging.info(f"Created sandbox directory: {target_dir}")
+        # Create a managed directory for this dataset
+        safe_name = f"dataset_{doi.split('/')[-1].strip(')')}"
+        target_dir = WorkspaceManager.get_data_dir(safe_name)
+        logging.info(f"Created managed dataset directory: {target_dir}")
     else:
         os.makedirs(target_dir, exist_ok=True)
-        logging.info(f"Using provided target_dir: {target_dir}")
+    # -----------------------------
 
     # Check cache
     if doi in st.session_state.datasets_cache:

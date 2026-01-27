@@ -17,6 +17,8 @@ from pydantic import BaseModel, Field
 from typing import Optional, List, Literal
 from langchain_core.tools import StructuredTool
 
+from ..utils.workspace import WorkspaceManager
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -184,24 +186,9 @@ def retrieve_copernicus_marine_data(
                 "message": "Failed to retrieve Copernicus Marine data: copernicusmarine package not installed"
             }
         
-        # 1) Determine or create a sandbox directory  
-        main_dir = None
-        if "streamlit" in sys.modules and hasattr(st, 'session_state') and st.session_state:
-            # Prioritize getting the sandbox path from the session's thread_id
-            thread_id = st.session_state.get("thread_id")
-            if thread_id:
-                main_dir = os.path.join("tmp", "sandbox", thread_id)
-                logging.info(f"Found session thread_id. Using persistent sandbox: {main_dir}")
-
-        if not main_dir:
-            # This now only runs if no thread_id is found (e.g., during isolated testing)
-            main_dir = os.path.join("tmp", "sandbox", uuid.uuid4().hex)
-            logging.warning(f"No active session found. Created new temporary sandbox: {main_dir}")
-        os.makedirs(main_dir, exist_ok=True)
-
-        copernicus_dir = os.path.join(main_dir, "copernicus_data")
-        os.makedirs(copernicus_dir, exist_ok=True)
-        logging.info(f"Copernicus Marine output directory: {copernicus_dir}")
+        # 1) Determine directory
+        copernicus_dir = WorkspaceManager.get_data_dir(subfolder="copernicus_data")
+        logging.info(f"Copernicus output directory: {copernicus_dir}")
                 
         # 2) Load the dataset from Copernicus Marine Service
         logging.info(f"Loading dataset: {dataset_id}")
@@ -236,12 +223,12 @@ def retrieve_copernicus_marine_data(
             variables, start_datetime, end_datetime, minimum_depth, maximum_depth
         )
         nc_path = os.path.join(copernicus_dir, nc_filename)
-        
+
         logging.info(f"Saving to NetCDF file: {nc_path}")
         dataset.to_netcdf(nc_path)
         logging.info(f"Successfully saved to NetCDF: {nc_path}")
 
-        relative_path = os.path.join('copernicus_data', nc_filename)
+        relative_path = os.path.join('copernicus_data', nc_filename).replace("\\", "/")
         
         # 4) Return success with file path
         return {

@@ -217,12 +217,116 @@ search_agent = get_search_agent(
     api_key=API_KEY
 )
 
+# === Navigation ===
+# Force sync sidebar radio with session state BEFORE widget instantiation
+current_selection = "Dataset Explorer" if st.session_state.current_page == "search" else "Data Agent"
+if "nav_selection" not in st.session_state or st.session_state.nav_selection != current_selection:
+    st.session_state.nav_selection = current_selection
+
+def update_nav():
+    selection = st.session_state.nav_selection
+    if selection == "Dataset Explorer":
+        st.session_state.current_page = "search"
+    else:
+        st.session_state.current_page = "data_agent"
+
+st.sidebar.divider()
+st.sidebar.radio(
+    "Navigation", 
+    ["Dataset Explorer", "Data Agent"], 
+    key="nav_selection",
+    on_change=update_nav
+)
+
 # -------------------------
 # SEARCH PAGE (Dataset Explorer)
 # -------------------------
 if st.session_state.current_page == "search":
     st.markdown("## Dataset Explorer")
     
+    # --- Selected Datasets Actions ---
+    if len(st.session_state.selected_datasets) > 0:
+        with st.container():
+            st.info(f"**{len(st.session_state.selected_datasets)} datasets selected**")
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                if st.button("📥 Load Selected into Workspace", use_container_width=True):
+                    with st.spinner("Fetching and caching datasets..."):
+                        load_selected_datasets_into_cache(st.session_state.selected_datasets, st.session_state)
+                        set_active_datasets_from_selection(st.session_state)
+                    st.success(f"Loaded {len(st.session_state.selected_datasets)} datasets into Workspace!")
+            
+            with col2:
+                # Prepare ZIP download
+                if st.button("📦 Prepare ZIP Download", use_container_width=True):
+                    with st.spinner("Downloading and zipping files..."):
+                        # Ensure datasets are fetched first
+                        load_selected_datasets_into_cache(st.session_state.selected_datasets, st.session_state)
+                        
+                        # Create ZIP
+                        import zipfile
+                        import io
+                        from src.utils.workspace import WorkspaceManager
+                        
+                        # We use the main sandbox for the current session
+                        thread_id = st.session_state.get("thread_id")
+                        sandbox_root = WorkspaceManager.get_sandbox_path(thread_id)
+                        
+                        zip_buffer = io.BytesIO()
+                        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                            for doi in st.session_state.selected_datasets:
+                                # Find the path in cache
+                                dataset_path, name = st.session_state.datasets_cache.get(doi, (None, None))
+                                if dataset_path and os.path.isdir(dataset_path):
+                                    # Create a clean folder name for the zip
+                                    folder_name = f"dataset_{doi.split('/')[-1]}"
+                                    # Add all files in directory to zip
+                                    for root, _, files in os.walk(dataset_path):
+                                        for file in files:
+                                            file_path = os.path.join(root, file)
+                                            # Relative path inside zip: dataset_folder/filename
+                                            rel_path = os.path.relpath(file_path, dataset_path)
+                                            arc_name = os.path.join(folder_name, rel_path)
+                                            zip_file.write(file_path, arc_name)
+                                else:
+                                    # Try to load if missing (just in case)
+                                    logging.warning(f"DOI {doi} not found in cache during ZIP creation, attempting fetch...")
+                                    try:
+                                        from src.search.dataset_utils import fetch_dataset
+                                        # We don't have the exact target_dir here easily without duplicating logic, 
+                                        # but fetch_dataset returns path. 
+                                        # Let's rely on load_selected_datasets_into_cache having run.
+                                        # If it failed, we skip.
+                                        pass 
+                                    except:
+                                        pass
+                        
+                        st.session_state.download_zip_data = zip_buffer.getvalue()
+                        st.session_state.download_zip_name = f"pangaea_datasets_{uuid.uuid4().hex[:8]}.zip"
+                        st.rerun()
+
+                # Show download button if ready
+                if "download_zip_data" in st.session_state:
+                    st.download_button(
+                        label="⬇️ Download ZIP",
+                        data=st.session_state.download_zip_data,
+                        file_name=st.session_state.download_zip_name,
+                        mime="application/zip",
+                        use_container_width=True
+                    )
+
+            with col3:
+                if st.button("➡️ Go to Data Agent", use_container_width=True):
+                    # Ensure loaded before switching
+                    load_selected_datasets_into_cache(st.session_state.selected_datasets, st.session_state)
+                    set_active_datasets_from_selection(st.session_state)
+                    
+                    st.session_state.current_page = "data_agent"
+                    st.rerun()
+            
+            st.divider()
+
     chat_placeholder = st.container()
     message_placeholder = st.empty()
     chat_input_container = st.container()
@@ -314,39 +418,45 @@ if st.session_state.current_page == "search":
                             else:
                                 st.session_state.selected_datasets.discard(row['DOI'])
                 else:
-                    # For final results, display normally (visible by default)
-                    # Add select all checkbox at the top
-                    cols = st.columns([1, 2, 2, 4, 2, 1])
-                    with cols[5]:
-                        all_dois_in_table = set(df['DOI'].tolist())
-                        all_selected = all_dois_in_table.issubset(st.session_state.selected_datasets)
-                        
-                        select_all = st.checkbox("Select All", key=f"select_all_{i}", value=all_selected)
-                        if select_all and not all_selected:
-                            st.session_state.selected_datasets.update(all_dois_in_table)
-                            st.rerun()
-                        elif not select_all and all_selected:
-                            st.session_state.selected_datasets -= all_dois_in_table
-                            st.rerun()
-                    
-                    for index, row in df.iterrows():
+                    # For final results, wrap in expander to avoid massive scrolling
+                    # expanded=False by default per user request
+                    with st.expander(f"✅ Search Results ({len(df)} datasets)", expanded=False):
+                        # Add select all checkbox at the top
                         cols = st.columns([1, 2, 2, 4, 2, 1])
-                        cols[0].write(f"**#{row['Number']}**")
-                        cols[1].write(f"**Name:** {row['Name']}")
-                        cols[2].write(f"**DOI:** [{row['DOI']}]({row['DOI']})")
-                        with cols[3].expander("See full description"):
-                            st.write(row['Description'])
-                        parameters_list = row['Parameters'].split(", ")
-                        if len(parameters_list) > 7:
-                            parameters_list = parameters_list[:7] + ["..."]
-                        cols[4].write(f"**Parameters:** {', '.join(parameters_list)}")
-                        checkbox_key = f"select-final-{i}-{index}"
                         with cols[5]:
-                            selected = st.checkbox("Select", key=checkbox_key, value=row['DOI'] in st.session_state.selected_datasets)
-                        if selected:
-                            st.session_state.selected_datasets.add(row['DOI'])
-                        else:
-                            st.session_state.selected_datasets.discard(row['DOI'])
+                            all_dois_in_table = set(df['DOI'].tolist())
+                            all_selected = all_dois_in_table.issubset(st.session_state.selected_datasets)
+                            
+                            select_all = st.checkbox("Select All", key=f"select_all_{i}", value=all_selected)
+                            if select_all and not all_selected:
+                                st.session_state.selected_datasets.update(all_dois_in_table)
+                                st.rerun()
+                            elif not select_all and all_selected:
+                                st.session_state.selected_datasets -= all_dois_in_table
+                                st.rerun()
+                        
+                        for index, row in df.iterrows():
+                            cols = st.columns([1, 2, 2, 4, 2, 1])
+                            cols[0].write(f"**#{row['Number']}**")
+                            cols[1].write(f"**Name:** {row['Name']}")
+                            cols[2].write(f"**DOI:** [{row['DOI']}]({row['DOI']})")
+                            with cols[3]:
+                                # Workaround for Streamlit nested expander limitation:
+                                # Show truncated text with full description in tooltip
+                                desc_text = row['Description']
+                                short_desc = desc_text[:150] + "..." if len(desc_text) > 150 else desc_text
+                                st.markdown(short_desc, help=desc_text)
+                            parameters_list = row['Parameters'].split(", ")
+                            if len(parameters_list) > 7:
+                                parameters_list = parameters_list[:7] + ["..."]
+                            cols[4].write(f"**Parameters:** {', '.join(parameters_list)}")
+                            checkbox_key = f"select-final-{i}-{index}"
+                            with cols[5]:
+                                selected = st.checkbox("Select", key=checkbox_key, value=row['DOI'] in st.session_state.selected_datasets)
+                            if selected:
+                                st.session_state.selected_datasets.add(row['DOI'])
+                            else:
+                                st.session_state.selected_datasets.discard(row['DOI'])
 
     # --- Single search input form ---
     with chat_input_container:
@@ -496,70 +606,6 @@ if st.session_state.current_page == "search":
                     st.session_state.search_offset = offset + new_df.shape[0]
                     st.rerun()
 
-    # --- Send Selected Datasets button ---
-    button_placeholder = st.empty()
-    if len(st.session_state.selected_datasets) > 0:
-        with button_placeholder:
-            if st.button('Send Selected Datasets to Data Agent', key='send_datasets_button'):
-                # 1. Force the creation of a new session ID to create a new, clean sandbox.
-                old_thread_id = st.session_state.get("thread_id") # Remember old ID
-                ensure_thread_id(st.session_state, force_new=True)
-                new_thread_id = st.session_state.get("thread_id")
-                logging.info(f"New Data Agent session started. Sandbox/Thread ID: {new_thread_id}")
-
-                # 2. KILL OLD PERSISTENT REPL TO START WITH CLEAN SLATE
-                if old_thread_id:
-                    from src.tools.python_repl import REPLManager
-                    REPLManager.cleanup_repl(old_thread_id)
-                    logging.info(f"Cleaned up persistent REPL for previous session: {old_thread_id}")
-
-                # 3. Clear state from any previous analysis to ensure a clean start.
-                st.session_state.messages_data_agent = []
-                st.session_state.intermediate_steps = []
-                st.session_state.execution_history = []
-                st.session_state.oceanographer_agent_used = False
-                st.session_state.ecologist_agent_used = False
-                st.session_state.visualization_agent_used = False
-                st.session_state.dataframe_agent_used = False
-
-                # 3. Load datasets into the newly defined sandbox.
-                load_selected_datasets_into_cache(st.session_state.selected_datasets, st.session_state)
-                set_active_datasets_from_selection(st.session_state)
-                set_current_page(st.session_state, "data_agent")
-                st.rerun()
-        st.markdown("""
-            <style>
-            div[data-testid="stButton"] > button {
-                position: fixed !important;
-                bottom: 80px !important;
-                right: 20px !important;
-                z-index: 9999 !important;
-                background-color: rgba(125, 209, 231, 0.8);
-                color: white;
-                border: none;
-                border-radius: 6px;
-                padding: 12px 24px;
-                cursor: pointer;
-                font-size: 14px;
-                transition: all 0.3s ease;
-                box-shadow: 0 0 15px rgba(125, 209, 231, 0.3);
-                animation: subtle-glow 2s infinite;
-            }
-            div[data-testid="stButton"] > button:hover {
-                transform: translateY(-2px);
-                background-color: rgba(125, 209, 231, 1);
-                box-shadow: 0 0 20px rgba(125, 209, 231, 0.5);
-            }
-            @keyframes subtle-glow {
-                0% { box-shadow: 0 0 15px rgba(125, 209, 231, 0.3); }
-                50% { box-shadow: 0 0 20px rgba(125, 209, 231, 0.5); }
-                100% { box-shadow: 0 0 15px rgba(125, 209, 231, 0.3); }
-            }
-            </style>
-        """, unsafe_allow_html=True)
-    else:
-        button_placeholder.empty()
-
     # Display active datasets (if any) and allow downloads or sending one dataset to Data Agent
     if st.session_state.active_datasets:
         for doi in st.session_state.active_datasets:
@@ -641,7 +687,7 @@ elif st.session_state.current_page == "data_agent":
     with button_cols[2]:
          # Back to Search button
          if st.button("Back to Search", key="back_to_search_data_agent", use_container_width=True, type="secondary"):
-             set_current_page(st.session_state, "search")
+             st.session_state.current_page = "search"
              logging.info("Navigated back to Search page")
              st.rerun()
 

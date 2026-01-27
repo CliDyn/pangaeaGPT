@@ -14,6 +14,7 @@ import sys
 from typing import Dict, List, Any, Tuple
 
 from ..utils import log_history_event
+from ..utils.workspace import WorkspaceManager
 from ..tools.package_tools import install_package_tool
 
 def agent_node(state, agent, name):
@@ -281,76 +282,104 @@ def agent_node(state, agent, name):
 
 def prepare_visualization_environment(datasets_info: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], str, List[str]]:
     """
-    Prepares dataset information, sandbox paths, and formatted text
-    for visualization agents. Centralizes logic previously duplicated.
+    Prepares dataset information using WorkspaceManager.
+    Enhanced with full sandbox file scanning for accumulated datasets (Shopping Cart strategy).
     """
     # Initialize variables
     datasets_text = ""
     dataset_variables = []
     datasets = {}
 
-    # 1. Extract the main UUID directory (sandbox)
-    uuid_main_dir = None
-    for info in datasets_info:
-        sandbox_path = info.get('sandbox_path')
-        if sandbox_path and isinstance(sandbox_path, str) and os.path.isdir(sandbox_path):
-            uuid_main_dir = os.path.dirname(os.path.abspath(sandbox_path))
-            logging.info(f"Found main UUID directory from sandbox_path: {uuid_main_dir}")
-            break
+    # 1. Get Main Paths via Manager (explicit thread_id for safety)
+    thread_id = None
+    if "streamlit" in sys.modules:
+        try:
+            thread_id = st.session_state.get("thread_id")
+        except Exception:
+            pass
+
+    uuid_main_dir = WorkspaceManager.get_sandbox_path(thread_id)
+    results_dir = WorkspaceManager.get_results_dir(thread_id)
 
     datasets["uuid_main_dir"] = uuid_main_dir
+    datasets["results_dir"] = results_dir
 
-    # 2. Setup results directory and list files
-    results_dir = None
-    uuid_dir_files = []
-    if uuid_main_dir and os.path.exists(uuid_main_dir):
-        results_dir = os.path.join(uuid_main_dir, 'results')
-        os.makedirs(results_dir, exist_ok=True)
-        datasets["results_dir"] = results_dir
-        logging.info(f"Added results_dir to datasets: {results_dir}")
-        try:
-            uuid_dir_files = os.listdir(uuid_main_dir)
-        except Exception as e:
-            logging.error(f"Error listing UUID directory files: {str(e)}")
+    logging.info(f"Environment Prep: Sandbox={uuid_main_dir}")
 
-    # 3. Path instructions for the prompt
-    uuid_paths = "### ⚠️ CRITICAL: EXACT DATASET PATHS - MUST USE THESE EXACTLY AS SHOWN ⚠️\n"
-    uuid_paths += "The following paths contain unique IDs that MUST BE used with os.path.join():\n\n"
+    # --- DEEP SCAN SANDBOX FOR ALL ACCUMULATED FILES (Shopping Cart strategy) ---
+    sandbox_files = []
+    if os.path.exists(uuid_main_dir):
+        for root, dirs, files in os.walk(uuid_main_dir):
+            # Skip results folder (outputs, not inputs)
+            if 'results' in root:
+                continue
+            # Skip hidden directories
+            dirs[:] = [d for d in dirs if not d.startswith('.')]
+            for f in files:
+                if not f.startswith('.'):
+                    # Create clean relative path from sandbox root
+                    full_path = os.path.join(root, f)
+                    rel_path = os.path.relpath(full_path, uuid_main_dir).replace('\\', '/')
+                    sandbox_files.append(rel_path)
 
-    if uuid_main_dir:
-        uuid_paths += f"# MAIN OUTPUT DIRECTORY - YOUR WORKSPACE:\n"
-        uuid_paths += f"uuid_main_dir = r'{uuid_main_dir}'\n"
-        uuid_paths += f"results_dir = r'{results_dir}'  # 📁 Save all plots here!\n\n"
-        uuid_paths += f"# Files currently in main directory: {', '.join(uuid_dir_files) if uuid_dir_files else 'None'}\n\n"
+    logging.info(f"Environment Prep: Found {len(sandbox_files)} files in sandbox (accumulated data)")
+    # -----------------------------------------------
 
-    # 4. Process individual datasets
+    # 2. Build Prompt Instructions (Using forward slashes for cross-platform python safety)
+    clean_main = uuid_main_dir.replace(os.sep, '/')
+    clean_results = results_dir.replace(os.sep, '/')
+
+    uuid_paths = f"### ACCUMULATED WORKSPACE FILES (The Shopping Cart)\n"
+    uuid_paths += f"Root Dir: `{clean_main}`\n"
+    uuid_paths += f"Results Dir: `{clean_results}`\n\n"
+
+    # --- LIST ALL ACCUMULATED FILES ---
+    if sandbox_files:
+        uuid_paths += "**Available Files for Analysis:**\n"
+        # Show first 60 files with relative paths
+        for f in sandbox_files[:60]:
+            uuid_paths += f"- `{f}`\n"
+        if len(sandbox_files) > 60:
+            uuid_paths += f"... ({len(sandbox_files) - 60} more files)\n"
+        uuid_paths += "\n**TIP:** Load files using: `pd.read_csv(os.path.join(uuid_main_dir, 'folder/file.csv'))`\n\n"
+    else:
+        uuid_paths += "No files in sandbox yet.\n\n"
+    # ----------------------------------
+
+    # 3. Process individual datasets (from metadata)
     for i, info in enumerate(datasets_info):
         var_name = f"dataset_{i + 1}"
         datasets[var_name] = info['dataset']
         dataset_variables.append(var_name)
-        
-        sandbox_path = info.get('sandbox_path')
-        if sandbox_path and isinstance(sandbox_path, str) and os.path.isdir(sandbox_path):
-            full_uuid_path = os.path.abspath(sandbox_path).replace('\\', '/')
+
+        # Try to get path from 'sandbox_path' or 'dataset'
+        ds_path = info.get('sandbox_path') or info.get('dataset')
+
+        if ds_path and isinstance(ds_path, str):
+            full_uuid_path = os.path.abspath(ds_path).replace(os.sep, '/')
             uuid_paths += f"# Dataset {i+1}: {info['name']}\n"
-            uuid_paths += f"# This dataset is located in a directory. Use the path variable below.\n"
             uuid_paths += f"{var_name}_path = r'{full_uuid_path}'\n\n"
-            
-            # List files within the dataset path
-            if os.path.exists(full_uuid_path):
+
+            # List files if directory exists
+            if os.path.isdir(full_uuid_path):
                 try:
                     files = os.listdir(full_uuid_path)
-                    uuid_paths += f"# Files available in {var_name}_path: {', '.join(files)}\n\n"
-                except Exception as e:
-                    uuid_paths += f"# Error listing files: {str(e)}\n\n"
+                    # Don't list too many files (e.g. for Zarr)
+                    if len(files) < 50:
+                        uuid_paths += f"# Files available: {', '.join(files)}\n\n"
+                    else:
+                        uuid_paths += f"# Files available: {len(files)} items (Zarr/folder)\n\n"
+                except Exception:
+                    pass
 
-    # 5. Global warnings
-    uuid_paths += "# ⚠️ CRITICAL WARNINGS ⚠️\n"
-    uuid_paths += "# 1. NEVER use '/mnt/data/...' or similar paths - they DO NOT EXIST and WILL CAUSE ERRORS\n"
-    uuid_paths += "# 2. ALWAYS use the exact dataset_X_path variables shown above\n"
-    uuid_paths += "# 3. ALWAYS check which files exist before trying to read them\n\n"
+    # 4. Global warnings
+    uuid_paths += "# CRITICAL WARNINGS\n"
+    uuid_paths += "# 1. NEVER use '/mnt/data/...' paths\n"
+    uuid_paths += "# 2. ALWAYS use the exact path variables shown above\n"
+    uuid_paths += "# 3. ALWAYS check which files exist before reading\n"
+    uuid_paths += "# 4. All accumulated files are available - use the file list above!\n\n"
 
-    # 6. Standard dataset info summary
+    # 5. Summary
     datasets_summary = ""
     for i, info in enumerate(datasets_info):
         datasets_summary += (
@@ -363,7 +392,6 @@ def prepare_visualization_environment(datasets_info: List[Dict[str, Any]]) -> Tu
 
     datasets_text = uuid_paths + datasets_summary
 
-    # Store in session state if running in Streamlit context
     if "streamlit" in sys.modules and hasattr(st, 'session_state'):
        st.session_state["viz_datasets_text"] = datasets_text
 

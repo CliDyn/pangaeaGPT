@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
 from openai import OpenAI
 from ..config import API_KEY
+from ..utils.workspace import WorkspaceManager
 
 # Define the function to encode the image
 def encode_image(image_path):
@@ -17,28 +18,18 @@ def reflect_on_image(image_path: str) -> str:
     """
     Analyzes an image and provides feedback. Automatically resolves sandbox paths.
     """
-    # --- NEW SANDBOX PATH RESOLUTION LOGIC ---
     final_image_path = image_path
 
-    # If the path is relative, resolve it against the current session's sandbox
     if not os.path.isabs(image_path):
-        thread_id = st.session_state.get("thread_id")
-        if thread_id:
-            sandbox_dir = os.path.join("tmp", "sandbox", thread_id)
-            potential_path = os.path.join(sandbox_dir, image_path)
-            if os.path.exists(potential_path):
-                final_image_path = potential_path
-                logging.info(f"Resolved relative path '{image_path}' to sandbox path '{final_image_path}'")
-            else:
-                logging.warning(f"Could not resolve relative path '{image_path}' in sandbox '{sandbox_dir}'")
-        else:
-            logging.warning("Could not resolve relative path: No thread_id in session state.")
-    # --- END OF NEW LOGIC ---
+        # Safe resolution
+        resolved = WorkspaceManager.resolve_path(image_path)
+        if resolved:
+            final_image_path = resolved
+            logging.info(f"Resolved path via manager: {final_image_path}")
 
     if not os.path.exists(final_image_path):
-        # Provide a more informative error message
-        return (f"Error: The file '{final_image_path}' (resolved from '{image_path}') does not exist. "
-                f"This often happens if the file was not saved correctly or if there is a path mismatch between the agent's environment and the tool's environment.")
+        return (f"Error: The file '{final_image_path}' does not exist. "
+                f"Please check that the file was saved correctly.")
 
     base64_image = encode_image(final_image_path)
 

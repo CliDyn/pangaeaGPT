@@ -210,14 +210,38 @@ class Prompts:
         era5_copernicus_section = (
             f"\n### 🌍 When to use ERA5 (Earthmover) vs Copernicus Marine Data:\n"
             f"- Use **ERA5** (via `retrieve_era5_data`) for Atmospheric/Surface data: Air Temp ('t2'), Wind ('u10','v10'), Pressure ('mslp'), Rain ('cp', 'lsp').\n"
-            f"  * **CRITICAL OPTIMIZATION**: You MUST set `query_type` correctly!\n"
-            f"  * If the user wants a **MAP** (large area, specific time), set `query_type='spatial'`.\n"
-            f"  * If the user wants a **TIME SERIES** (specific location, long duration), set `query_type='temporal'`.\n"
             f"- Use **Copernicus Marine** for ocean data: sea temperature, salinity, currents, sea level, chlorophyll\n"
             f"- For coastal or ocean studies, Copernicus Marine offers higher resolution\n"
             f"- Copernicus Marine products:\n"
             f"  * PHYSICS (0.083deg): Higher resolution for temperature, salinity, currents\n"
-            f"  * BIOGEOCHEMISTRY (0.25deg): Lower resolution for biological/chemical variables\n"
+            f"  * BIOGEOCHEMISTRY (0.25deg): Lower resolution for biological/chemical variables\n\n"
+            
+            f"### ⚡ CRITICAL: ERA5 query_type OPTIMIZATION ⚡\n"
+            f"ERA5 data has TWO chunk layouts. **Choosing WRONG = 10-100x SLOWER!**\n\n"
+            
+            f"**Use `query_type='temporal'` when:**\n"
+            f"  - Time series plots (temperature over months/years)\n"
+            f"  - Time period > 1 day (24+ hours)\n"
+            f"  - Small/medium region (< 20° × 20°)\n"
+            f"  - Examples: 'plot temperature for 2021', 'wind speed last 6 months', 'seasonal analysis'\n\n"
+            
+            f"**Use `query_type='spatial'` when:**\n"
+            f"  - Map/snapshot visualizations\n"
+            f"  - Time period ≤ 1 day (1-24 hours)\n"
+            f"  - Large region (> 30° × 30°, continental, global)\n"
+            f"  - Examples: 'map of Europe temperature today', 'global wind pattern', 'Arctic snapshot'\n\n"
+            
+            f"**Quick Decision Table:**\n"
+            f"```\n"
+            f"Region \\ Time  |  ≤1 hour  |  1 day  |  1 week+  \n"
+            f"---------------+-----------+---------+-----------\n"
+            f"Small (<10°)   |  SPATIAL  | TEMPORAL| TEMPORAL  \n"
+            f"Medium (10-30°)|  SPATIAL  | SPATIAL | TEMPORAL  \n"
+            f"Large (>30°)   |  SPATIAL  | SPATIAL | SPATIAL   \n"
+            f"```\n\n"
+            
+            f"⚠️ **WARNING**: Using SPATIAL for long time series (weeks/months) will TIMEOUT!\n"
+            f"⚠️ **WARNING**: Using TEMPORAL for large regions (>30°) is very slow!\n"
         )
         
         workflow = Prompts._get_visualization_workflow_section()

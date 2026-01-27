@@ -16,8 +16,8 @@ from ..search.search_pg_default import pg_search_default
 
 
 class ParallelSearchArgs(BaseModel):
-    search_queries: List[str] = Field(description="List of SEARCH QUERY STRINGS (NOT DOIs, NOT full text) to execute sequentially. Example: ['temperature data', 'salinity measurements', 'arctic ocean CTD']")
-    count_per_query: Optional[int] = Field(default=30, description="Number of results per query (5-50)")
+    search_queries: List[str] = Field(description="List of 2-3 SEARCH QUERY STRINGS. Example: ['MOSAiC track', 'MOSAiC wind data']")
+    count_per_query: Optional[int] = Field(default=20, description="Results per query. Default 20 (fast). Max 50.")
     mindate: Optional[str] = Field(default=None, description="Minimum date in 'YYYY-MM-DD' format")
     maxdate: Optional[str] = Field(default=None, description="Maximum date in 'YYYY-MM-DD' format")
     minlat: Optional[float] = Field(default=None, description="Minimum latitude in decimal degrees")
@@ -40,11 +40,11 @@ class SearchResult:
 class EnhancedSequentialSearchExecutor:
     """
     Enhanced SEQUENTIAL search executor with RATE LIMIT PROTECTION.
-    NOW WITH DELAYS TO PREVENT GETTING KICKED!
+    Balanced delay: fast but safe from bans.
     """
-    
-    def __init__(self, delay_between_searches: float = 20.0):
-        self.delay_between_searches = delay_between_searches  # 3 seconds delay by default
+
+    def __init__(self, delay_between_searches: float = 1.5):
+        self.delay_between_searches = delay_between_searches  # 1.5 seconds - fast but safe
         
     def execute_single_search_with_metadata(self, query: str, count: int = 30, **search_params) -> SearchResult:
         """

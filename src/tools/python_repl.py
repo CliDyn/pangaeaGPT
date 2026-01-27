@@ -29,6 +29,7 @@ except ImportError:
     raise ImportError("Missing dependencies for persistent REPL. Install jupyter_client and ipykernel.")
 
 from ..utils import log_history_event
+from ..utils.workspace import WorkspaceManager
 
 # --- New Jupyter Kernel Executor ---
 
@@ -246,151 +247,97 @@ class CustomPythonREPLTool(PythonREPLTool):
 
     def _initialize_session(self, repl: JupyterKernelExecutor) -> None:
         """Prepare the Kernel session by importing libraries and auto-loading data."""
-        logging.info("Initializing persistent Kernel session with auto-loading...")
+        logging.info("Initializing persistent Kernel session...")
+
+        # --- WORKSPACE MANAGER SETUP ---
+        # Get paths for the specific session
+        thread_id = self._session_key or WorkspaceManager.get_thread_id()
+
+        main_dir = WorkspaceManager.get_sandbox_path(thread_id).replace(os.sep, '/')
+        results_dir = WorkspaceManager.get_results_dir(thread_id).replace(os.sep, '/')
 
         initialization_code = [
-            "import os",
-            "import sys",
-            "import pandas as pd",
-            "import numpy as np",
-            "import matplotlib.pyplot as plt",
-            "import xarray as xr",
-            "import logging",
+            "import os", "import sys", "import pandas as pd", "import numpy as np",
+            "import matplotlib.pyplot as plt", "import xarray as xr", "import logging",
             "from io import StringIO",
-            # Configure matplotlib for non-interactive backend (Crucial for kernels)
-            "import matplotlib",
-            "matplotlib.use('Agg')"
+            "import matplotlib", "matplotlib.use('Agg')",
+            # Inject Paths
+            f"uuid_main_dir = r'{main_dir}'",
+            f"results_dir = r'{results_dir}'",
+            "os.makedirs(results_dir, exist_ok=True)",
+            # Force CWD to Sandbox
+            f"os.chdir(uuid_main_dir)"
         ]
+        # -------------------------------
 
-        # Add results_dir if available
-        if self._results_dir:
-            # Ensure paths are correctly formatted for the kernel environment (use forward slashes)
-            results_dir_path = os.path.abspath(self._results_dir).replace('\\', '/')
-            initialization_code.append(f"results_dir = r'{results_dir_path}'")
-            # Kernel CWD should handle the existence, but we ensure the 'results' subdirectory exists
-            initialization_code.append("os.makedirs(results_dir, exist_ok=True)")
-
-        # Inject dataset variables by auto-loading from files
+        # Inject dataset variables (код загрузки датасетов оставляем как был)
         for key, value in self._datasets.items():
             if key.startswith('dataset_') and isinstance(value, str) and os.path.isdir(value):
-                # 1. Create the path variable (e.g., dataset_1_path)
                 path_var_name = f"{key}_path"
-                abs_path = os.path.abspath(value).replace('\\', '/')
+                abs_path = os.path.abspath(value).replace(os.sep, '/')
                 initialization_code.append(f"{path_var_name} = r'{abs_path}'")
+                # Auto-load CSV attempt...
+                if os.path.exists(os.path.join(value, 'data.csv')):
+                    initialization_code.append(f"try: {key} = pd.read_csv(os.path.join({path_var_name}, 'data.csv'))\nexcept: pass")
 
-                # 2. Attempt to find and auto-load data.csv
-                csv_path = os.path.join(value, 'data.csv')
-                if os.path.exists(csv_path):
-                    initialization_code.append(f"# Auto-loading {key} from data.csv")
-                    initialization_code.append(f"try:")
-                    initialization_code.append(f"    {key} = pd.read_csv(os.path.join({path_var_name}, 'data.csv'))")
-                    initialization_code.append(f"    print(f'Successfully auto-loaded data.csv into `{key}` variable.')")
-                    initialization_code.append(f"except Exception as e:")
-                    initialization_code.append(f"    print(f'Could not auto-load {key}: {{e}}')")
-
-            elif key == "uuid_main_dir" and isinstance(value, str):
-                # Add the main UUID directory
-                abs_path = os.path.abspath(value).replace('\\', '/')
-                initialization_code.append(f"uuid_main_dir = r'{abs_path}'")
-
-        # Execute all initialization code in one go
         full_init_code = "\n".join(initialization_code)
-        result = repl.run(full_init_code)
-        logging.info(f"Kernel session initialization result: {result.strip()}")
+        repl.run(full_init_code)
         repl.is_initialized = True
 
     def _run(self, query: str, **kwargs) -> Any:
-        """
-        Execute code using the persistent Jupyter Kernel tied to the session.
-        """
-        # Get thread_id from session_state (works in Streamlit and mocked CLI)
-        try:
-            session_id = st.session_state.thread_id
-            if not session_id:
-                raise ValueError("Session ID (thread_id) is empty or None.")
-        except (AttributeError, ValueError, KeyError) as e:
-             logging.error(f"CRITICAL ERROR: Could not retrieve session_id. Error: {e}")
-             return {
-                "result": "ERROR: Session ID is missing. Cannot continue execution.",
-                "output": "ERROR: Session ID is missing. Cannot continue execution.",
-                "plot_images": []
-            }
+        # Retrieve Session ID
+        session_id = self._session_key or WorkspaceManager.get_thread_id()
 
-        # Get sandbox path from datasets (this is the intended working directory)
-        sandbox_path = self._datasets.get("uuid_main_dir")
-        
+        # Get Sandbox Path from Manager
+        sandbox_path = WorkspaceManager.get_sandbox_path(session_id)
+
         try:
-            # Retrieve or create the kernel executor
+            # Pass explicit sandbox path to Kernel Executor
             repl = REPLManager.get_repl(session_id, sandbox_path=sandbox_path)
         except RuntimeError as e:
-            # Handle kernel initialization failure
-            return {
-                "result": f"ERROR: Failed to initialize the execution environment (Jupyter Kernel). Details: {e}",
-                "output": f"ERROR: Failed to initialize the execution environment (Jupyter Kernel). Details: {e}",
-                "plot_images": []
-            }
+            return {"result": f"Error: {e}", "output": str(e), "plot_images": []}
 
-        # "Warm up" the REPL on first call in the session
         if not repl.is_initialized:
             self._initialize_session(repl)
 
-        logging.info(f"Executing code in persistent Kernel for session {session_id}:\n{query}")
+        logging.info(f"Executing code for session {session_id}")
 
         # Execute user code
         output = repl.run(query)
 
-        # Logic for detecting generated plots
+        # --- ROBUST PLOT DETECTION ---
         generated_plots = []
         image_extensions = ('.png', '.jpg', '.jpeg', '.svg', '.pdf')
 
-        # --- Plot Detection Logic ---
-        # The kernel executes with the sandbox_path as its CWD.
-        # We rely on the agent saving plots to relative paths (e.g., 'results/plot.png')
-        
-        # 1. Check for plot files mentioned in the output (stdout/stderr)
-        # Use regex to find potential paths (e.g., "Plot saved to: results/my_plot.png")
+        # 1. Check actual results directory (File System Check)
+        results_dir = WorkspaceManager.get_results_dir(session_id)
+        if os.path.exists(results_dir):
+            for file in os.listdir(results_dir):
+                if file.lower().endswith(image_extensions):
+                    full_path = os.path.join(results_dir, file)
+                    # Check if modified in the last 15 seconds (fresh plot)
+                    if time.time() - os.path.getmtime(full_path) < 15:
+                        generated_plots.append(full_path)
+
+        # 2. Check output for specific print statements (Fallback)
         matches = re.findall(r'([a-zA-Z0-9_\-/\\.]+\.(png|jpg|jpeg|svg|pdf))', output, re.IGNORECASE)
         for match in matches:
             potential_path = match[0].strip()
-            
-            # Resolve the path relative to the sandbox directory (where the kernel is running)
-            if sandbox_path:
-                # Normalize slashes
-                potential_path = potential_path.replace('\\', '/')
-                full_potential_path = os.path.join(sandbox_path, potential_path)
-            else:
-                # If no sandbox path (e.g. CLI fallback), check relative to current working dir
-                full_potential_path = os.path.abspath(potential_path)
+            # Use Manager to resolve path securely
+            resolved = WorkspaceManager.resolve_path(potential_path, session_id)
+            if resolved and os.path.exists(resolved) and resolved not in generated_plots:
+                generated_plots.append(resolved)
 
-            if os.path.exists(full_potential_path):
-                if full_potential_path not in generated_plots:
-                    generated_plots.append(full_potential_path)
-                    logging.info(f"Found plot path in output: {full_potential_path}")
-
-        # 2. Check results directory for recently created files (fallback mechanism)
-        if self._results_dir and os.path.exists(self._results_dir):
-            for file in os.listdir(self._results_dir):
-                if file.lower().endswith(image_extensions):
-                    full_path = os.path.join(self._results_dir, file)
-                    if full_path not in generated_plots and os.path.exists(full_path):
-                        # Check if file was created recently (within the last 10 seconds)
-                        # This prevents picking up old plots from the same session
-                        if time.time() - os.path.getmtime(full_path) < 10:
-                             generated_plots.append(full_path)
-                             logging.info(f"Found recent plot in results directory: {full_path}")
+        # -----------------------------
 
         if generated_plots:
-            # Update UI flag if using Streamlit (safe check)
-            if 'streamlit' in sys.modules and hasattr(st, 'session_state'):
+             if 'streamlit' in sys.modules and hasattr(st, 'session_state'):
                 st.session_state.new_plot_generated = True
-            
-            log_history_event(
-                st.session_state, "plot_generated",
-                {"plot_paths": generated_plots, "agent": "PythonREPL", "content": query}
-            )
+             log_history_event(st.session_state, "plot_generated",
+                             {"plot_paths": generated_plots, "agent": "PythonREPL"})
 
         return {
             "result": output,
-            "output": output,  # For backward compatibility
+            "output": output,
             "plot_images": generated_plots
         }
