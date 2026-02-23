@@ -3,7 +3,7 @@
 Centralized factory for creating and configuring language model instances.
 This allows for model-specific settings, like handling the 'temperature' parameter.
 """
-import streamlit as st
+import os
 from langchain_openai import ChatOpenAI
 from .config import API_KEY
 
@@ -16,7 +16,7 @@ def get_llm(model_name: str = None, temperature: float = 0.7):
 
     Args:
         model_name (str, optional): The name of the model to use. If None, it will be
-                                    retrieved from the Streamlit session state.
+                                    retrieved from environment or default.
         temperature (float, optional): The temperature to use for supported models.
                                        Defaults to 0.7.
 
@@ -24,8 +24,8 @@ def get_llm(model_name: str = None, temperature: float = 0.7):
         ChatOpenAI: A configured instance of the language model.
     """
     if model_name is None:
-        # This works for both Streamlit and CLI mode, as CLI mocks session_state
-        model_name = st.session_state.get("model_name", "gpt-4.1-mini")
+        # Try environment variable, then default
+        model_name = os.environ.get("PANGAEA_MODEL_NAME", "gpt-5.2")
 
     # List of models that are known to NOT support the 'temperature' parameter.
     # To add a new model with this restriction, just add its name to this list.

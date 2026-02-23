@@ -3,10 +3,9 @@
 
 import os
 import logging
-import streamlit as st
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_classic.agents import create_openai_tools_agent
-from langchain_classic.agents import AgentExecutor
+from langchain.agents import create_openai_tools_agent
+from langchain.agents import AgentExecutor
 
 
 from ..prompts import Prompts
@@ -14,7 +13,7 @@ from ..llm_factory import get_llm
 from ..tools.python_repl import CustomPythonREPLTool
 from ..tools.visualization_tools import list_plotting_data_files_tool
 
-def create_pandas_agent(user_query, datasets_info):
+def create_pandas_agent(user_query, datasets_info, session_id="default"):
     """
     Creates a data analysis agent (named DataFrameAgent for compatibility)
     that only has access to a Python REPL and a file listing tool.
@@ -23,6 +22,7 @@ def create_pandas_agent(user_query, datasets_info):
     Args:
         user_query (str): The user's query.
         datasets_info (list): Information about available datasets.
+        session_id (str): Thread ID for sandbox/results routing.
 
     Returns:
         AgentExecutor: The DataFrame agent executor.
@@ -51,11 +51,20 @@ def create_pandas_agent(user_query, datasets_info):
     uuid_paths_info = "### ⚠️ CRITICAL: Use these exact path variables to access data files ⚠️\n"
     for i, info in enumerate(datasets_info):
         var_name = f"dataset_{i + 1}"
-        datasets_for_repl[var_name] = info['dataset']
+
+        # FIX: Prioritize sandbox_path (string) over dataset (which might be a DataFrame)
+        # This ensures the Python REPL tool receives string paths to create dataset_X_path variables
+        ds_path = info.get('sandbox_path') or info.get('dataset')
+        if isinstance(ds_path, str):
+            datasets_for_repl[var_name] = ds_path  # Pass string path for REPL variable generation
+        else:
+            datasets_for_repl[var_name] = info['dataset']  # Fallback
+
         dataset_variables.append(var_name)
-        
-        if isinstance(info['dataset'], str) and os.path.isdir(info['dataset']):
-            full_uuid_path = os.path.abspath(info['dataset']).replace('\\', '/')
+
+        # Generate path info for the prompt
+        if isinstance(ds_path, str) and os.path.isdir(ds_path):
+            full_uuid_path = os.path.abspath(ds_path).replace('\\', '/')
             uuid_paths_info += f"# Path for Dataset {i+1} ({info['name']})\n"
             uuid_paths_info += f"{var_name}_path = r'{full_uuid_path}'\n"
     
@@ -79,10 +88,10 @@ def create_pandas_agent(user_query, datasets_info):
     )
 
     # Use the LLM factory. Low temperature is good for precise code generation.
-    llm = get_llm(temperature=0.0)
+    llm = get_llm(temperature=0.1)
 
     # Define the agent's very specific and limited toolset
-    repl_tool = CustomPythonREPLTool(datasets=datasets_for_repl)
+    repl_tool = CustomPythonREPLTool(datasets=datasets_for_repl, session_key=session_id)
     tools = [
         repl_tool,
         list_plotting_data_files_tool

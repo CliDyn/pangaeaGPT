@@ -1,14 +1,13 @@
-# src/agents/base.py 
-import logging
+# src/agents/base.py
 import os
 import time
+import logging
 import uuid
-import streamlit as st
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-# Add imports needed for the new helper functions
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_classic.agents import create_openai_tools_agent
-from langchain_classic.agents import AgentExecutor
+from langchain.agents import create_openai_tools_agent
+from langchain.agents import AgentExecutor
+from langchain_core.runnables import RunnableConfig
 
 import sys
 from typing import Dict, List, Any, Tuple
@@ -16,31 +15,169 @@ from typing import Dict, List, Any, Tuple
 from ..utils import log_history_event
 from ..utils.workspace import WorkspaceManager
 from ..tools.package_tools import install_package_tool
+from ..utils.session_manager import SessionManager
 
-def agent_node(state, agent, name):
+
+# =============================================================================
+# SMART COMPRESSION MEMORY SYSTEM
+# =============================================================================
+
+def compress_messages_to_summary(messages: List[Any], existing_summary: str = "") -> str:
+    """
+    Compresses a list of messages into a concise summary using a fast LLM.
+    This is the "Long-Term Memory" component of the Smart Compression system.
+
+    Args:
+        messages: List of messages to compress
+        existing_summary: Any existing summary to incorporate
+
+    Returns:
+        str: A compressed summary of the conversation context
+    """
+    from langchain_openai import ChatOpenAI
+    from ..config import API_KEY
+
+    if not messages:
+        return existing_summary
+
+    # Format messages for compression
+    message_text = ""
+    for msg in messages:
+        if hasattr(msg, 'name') and msg.name:
+            speaker = msg.name
+        elif isinstance(msg, HumanMessage):
+            speaker = "User"
+        elif isinstance(msg, AIMessage):
+            speaker = "Assistant"
+        else:
+            speaker = "System"
+
+        content = msg.content if hasattr(msg, 'content') else str(msg)
+        # Truncate very long individual messages
+        if len(content) > 1500:
+            content = content[:1500] + "... [truncated]"
+        message_text += f"[{speaker}]: {content}\n\n"
+
+    # Use gpt-4.1-mini for fast, cheap compression
+    compression_llm = ChatOpenAI(
+        api_key=API_KEY,
+        model_name="gpt-4.1-mini",
+        temperature=0.0
+    )
+
+    compression_prompt = f"""You are a scientific analysis session summarizer. Your task is to compress conversation history into a dense, information-preserving summary.
+
+CRITICAL: Preserve these elements with EXACT precision:
+1. **Variable names** (e.g., df_drift, dataset_1_path, merged_data)
+2. **File paths** (e.g., /path/to/era5_data/temperature.nc)
+3. **Data transformations** (filtering logic, merge keys, aggregations)
+4. **Key findings** (statistics, correlations, anomalies found)
+5. **Plot/output locations** (saved files, generated figures)
+
+EXISTING CONTEXT (incorporate this):
+{existing_summary if existing_summary else "None yet."}
+
+NEW MESSAGES TO COMPRESS:
+{message_text}
+
+OUTPUT FORMAT - Be structured and dense:
+## Data State
+- Variables created: [list with types]
+- Files loaded/saved: [paths]
+
+## Operations Performed
+- [Step-by-step what was done]
+
+## Key Results
+- [Numbers, findings, conclusions]
+
+## Current Status
+- [What's ready for next steps]
+
+Compress now:"""
+
+    try:
+        response = compression_llm.invoke([HumanMessage(content=compression_prompt)])
+        logging.info(f"Compressed {len(messages)} messages into summary of {len(response.content)} chars")
+        return response.content
+    except Exception as e:
+        logging.error(f"Error compressing messages: {e}")
+        # Fallback: simple concatenation
+        return existing_summary + "\n\n[Compression failed - raw context]: " + message_text[:2000]
+
+
+def get_memory_context_for_agent(state: Dict) -> str:
+    """
+    Builds the complete memory context to inject into an agent's input.
+    Combines the compressed chat_summary with recent messages.
+
+    Args:
+        state: The workflow state containing chat_summary and messages
+
+    Returns:
+        str: Formatted context string for injection
+    """
+    context_parts = []
+
+    # Part 1: Compressed long-term memory
+    chat_summary = state.get("chat_summary", "")
+    if chat_summary:
+        context_parts.append(
+            "=" * 60 + "\n"
+            "📓 SESSION CONTEXT (Previous Steps Summary)\n"
+            "=" * 60 + "\n"
+            f"{chat_summary}\n"
+            "=" * 60
+        )
+
+    # Part 2: Recent messages (short-term memory) - last 3 for immediate context
+    recent_messages = state.get("messages", [])[-3:]
+    if recent_messages:
+        recent_text = "\n".join([
+            f"[{msg.name if hasattr(msg, 'name') and msg.name else 'User'}]: {msg.content[:500]}..."
+            if len(msg.content) > 500 else
+            f"[{msg.name if hasattr(msg, 'name') and msg.name else 'User'}]: {msg.content}"
+            for msg in recent_messages if hasattr(msg, 'content')
+        ])
+        context_parts.append(
+            "\n📌 RECENT CONTEXT (Last 3 messages):\n"
+            f"{recent_text}"
+        )
+
+    return "\n\n".join(context_parts) if context_parts else ""
+
+def agent_node(state, agent, name, config: RunnableConfig = None):
     """
     Common agent node function used by all agents in the workflow.
-    
+
+    Enhanced with SMART COMPRESSION MEMORY:
+    - Injects chat_summary (long-term memory) into agent context
+    - Preserves variable names, file paths, and key results across steps
+
     Args:
         state: The current state of the workflow
         agent: The agent to execute
         name: The name of the agent
-        
+        config: RunnableConfig from LangGraph containing thread_id
+
     Returns:
         dict: The updated state after agent execution
     """
     import time
     import os
     logging.info(f"Entering agent_node for {name}")
-    
+
+    session_id = config.get("configurable", {}).get("thread_id", "default") if config else "default"
+    session_data = SessionManager.get_session(session_id)
+
     # Generate unique IDs for this agent execution
     agent_id = str(uuid.uuid4())
     agent_start_time = time.time()
-    
+
     # Add thinking log entry for agent start
     logging.info(f"Starting processing with {name}")
-    st.session_state.processing = True
-    
+    session_data["processing"] = True
+
     if 'agent_scratchpad' not in state or not isinstance(state['agent_scratchpad'], list):
         state['agent_scratchpad'] = []
 
@@ -51,19 +188,29 @@ def agent_node(state, agent, name):
     if user_messages:
         last_user_message = user_messages[-1].content
         local_input = last_user_message
-        
+
     # Find and include the task from the plan for this agent
     current_task = None
     for task in state.get('plan', []):
         if task.get('agent') == name and task.get('status') in ['in_progress', 'pending']:
             current_task = task
             break
-            
+
     if current_task:
         task_description = current_task.get('task', '')
         # Only use the task description without the original user query
         local_input = f"TASK: {task_description}"
         logging.info(f"Modified input for {name} to include ONLY task: {task_description}")
+
+    # ==========================================================================
+    # SMART COMPRESSION MEMORY INJECTION
+    # Inject the compressed session context so this agent knows what happened before
+    # ==========================================================================
+    memory_context = get_memory_context_for_agent(state)
+    if memory_context:
+        # Prepend the memory context to the agent's input
+        local_input = f"{memory_context}\n\n---\n\n🎯 CURRENT TASK:\n{local_input}"
+        logging.info(f"Injected {len(memory_context)} chars of memory context into {name}'s input")
 
     if 'plot_images' not in state or not isinstance(state['plot_images'], list):
         state['plot_images'] = []
@@ -124,9 +271,9 @@ def agent_node(state, agent, name):
     intermediate_steps = result.get("intermediate_steps", [])
     returned_plot_images = result.get("plot_images", [])
 
-    if 'intermediate_steps' not in st.session_state:
-        st.session_state['intermediate_steps'] = []
-    st.session_state['intermediate_steps'].extend(intermediate_steps)
+    if "intermediate_steps" not in session_data:
+        session_data["intermediate_steps"] = []
+    session_data["intermediate_steps"].extend(intermediate_steps)
     logging.info(f"Stored {len(intermediate_steps)} intermediate steps for {name}")
 
     # Extract plot_images from the agent's result
@@ -174,7 +321,7 @@ def agent_node(state, agent, name):
                     logging.info(f"Found plot from Python_REPL: {img}")
         
         log_history_event(
-            st.session_state,
+            session_data,
             "tool_usage",
             {
                 "agent_name": name,
@@ -216,14 +363,14 @@ def agent_node(state, agent, name):
             valid_plot_images.append(img_path)
             if img_path not in state["plot_images"]:
                 state["plot_images"].append(img_path)
-            st.session_state.new_plot_generated = True
+            session_data["new_plot_generated"] = True
             
             # Log the plot generation
             plot_id = str(uuid.uuid4())
             logging.info(f"Found valid plot: {os.path.basename(img_path)}")
             
             log_history_event(
-                st.session_state,
+                session_data,
                 "plot_generated",
                 {
                     "plot_path": img_path,
@@ -235,8 +382,7 @@ def agent_node(state, agent, name):
             logging.warning(f"Plot file not found: {img_path}")
     
     # Clear any legacy plot path references
-    if 'new_plot_path' in st.session_state:
-        st.session_state.new_plot_path = None
+    session_data["new_plot_path"] = None
     
     # Create the AI message with plot info
     ai_message = AIMessage(
@@ -254,9 +400,16 @@ def agent_node(state, agent, name):
     state["messages"].append(ai_message)
     logging.info(f"Appended AI message for {name} with {len(valid_plot_images)} plot images")
 
-    # Trim messages if needed
-    state["messages"] = state["messages"][-10:]
-    
+    # ==========================================================================
+    # SMART COMPRESSION MEMORY MANAGEMENT
+    # Instead of crude truncation, we compress old messages into chat_summary
+    # This is handled by the supervisor, but we track message count here
+    # ==========================================================================
+    message_count = len(state.get("messages", []))
+    logging.info(f"Current message count after {name}: {message_count}")
+    # NOTE: Compression is triggered by supervisor_with_planning when count > threshold
+    # We do NOT truncate here - that would lose context!
+
     # Store visualization state clearly
     if name == "OceanographerAgent":
         state["oceanographer_agent_used"] = True
@@ -280,7 +433,7 @@ def agent_node(state, agent, name):
     logging.info(f"Completed agent_node for {name}")
     return state
 
-def prepare_visualization_environment(datasets_info: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], str, List[str]]:
+def prepare_visualization_environment(datasets_info: List[Dict[str, Any]], session_id: str = "default") -> Tuple[Dict[str, Any], str, List[str]]:
     """
     Prepares dataset information using WorkspaceManager.
     Enhanced with full sandbox file scanning for accumulated datasets (Shopping Cart strategy).
@@ -290,13 +443,8 @@ def prepare_visualization_environment(datasets_info: List[Dict[str, Any]]) -> Tu
     dataset_variables = []
     datasets = {}
 
-    # 1. Get Main Paths via Manager (explicit thread_id for safety)
-    thread_id = None
-    if "streamlit" in sys.modules:
-        try:
-            thread_id = st.session_state.get("thread_id")
-        except Exception:
-            pass
+    # 1. Get Main Paths via Manager
+    thread_id = session_id
 
     uuid_main_dir = WorkspaceManager.get_sandbox_path(thread_id)
     results_dir = WorkspaceManager.get_results_dir(thread_id)
@@ -349,11 +497,16 @@ def prepare_visualization_environment(datasets_info: List[Dict[str, Any]]) -> Tu
     # 3. Process individual datasets (from metadata)
     for i, info in enumerate(datasets_info):
         var_name = f"dataset_{i + 1}"
-        datasets[var_name] = info['dataset']
-        dataset_variables.append(var_name)
 
-        # Try to get path from 'sandbox_path' or 'dataset'
+        # FIX: Prioritize sandbox_path (string) over dataset (which might be a DataFrame)
+        # This ensures the Python REPL tool receives string paths to create dataset_X_path variables
         ds_path = info.get('sandbox_path') or info.get('dataset')
+        if isinstance(ds_path, str):
+            datasets[var_name] = ds_path  # Pass string path for REPL variable generation
+        else:
+            datasets[var_name] = info['dataset']  # Fallback for backward compatibility
+
+        dataset_variables.append(var_name)
 
         if ds_path and isinstance(ds_path, str):
             full_uuid_path = os.path.abspath(ds_path).replace(os.sep, '/')
@@ -386,14 +539,14 @@ def prepare_visualization_environment(datasets_info: List[Dict[str, Any]]) -> Tu
             f"Dataset {i + 1}:\n"
             f"Name: {info['name']}\n"
             f"Description: {info['description']}\n"
-            f"Type: {info['data_type']}\n"
-            f"Sample Data: {info['df_head']}\n\n"
+            f"Type: {info.get('data_type', 'pandas DataFrame')}\n"
+            f"Sample Data: {info.get('df_head', 'Not available')}\n\n"
         )
 
     datasets_text = uuid_paths + datasets_summary
 
-    if "streamlit" in sys.modules and hasattr(st, 'session_state'):
-       st.session_state["viz_datasets_text"] = datasets_text
+    session_data = SessionManager.get_session(session_id)
+    session_data["viz_datasets_text"] = datasets_text
 
     return datasets, datasets_text, dataset_variables
 

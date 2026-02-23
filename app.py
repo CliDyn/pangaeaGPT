@@ -4,11 +4,11 @@ import streamlit as st
 import os
 import importlib
 import logging
-from io import StringIO           
+from io import StringIO             
 import pandas as pd
-import xarray as xr                
+import xarray as xr                 
 import json
-import time                       
+import time                         
 import uuid
 import base64
 from pathlib import Path
@@ -16,6 +16,7 @@ from pathlib import Path
 from src.ui.directory_explorer import render_directory_explorer
 import src.config as config
 from src.config import DEPLOYMENT_MODE
+
 # ------------------------------------------------------------------
 # Set Page Config first! (This must be the very first Streamlit command)
 st.set_page_config(
@@ -24,6 +25,33 @@ st.set_page_config(
     layout="wide"
 )
 # ------------------------------------------------------------------
+
+# === HELPER FUNCTIONS FOR CALLBACKS (FIXES N-1 COUNT & CLOSING DIV) ===
+def toggle_dataset_selection(doi):
+    """
+    Callback to toggle individual dataset selection.
+    Runs BEFORE the app re-renders, ensuring counters are accurate immediately.
+    Also keeps the results expander OPEN.
+    """
+    if doi in st.session_state.selected_datasets:
+        st.session_state.selected_datasets.discard(doi)
+    else:
+        st.session_state.selected_datasets.add(doi)
+    
+    # CRITICAL FIX: Keep the expander open when interacting
+    st.session_state.search_results_expanded = True
+
+def toggle_select_all(all_dois, select_all_key):
+    """Callback to toggle all visible datasets."""
+    is_checked = st.session_state[select_all_key]
+    if is_checked:
+        st.session_state.selected_datasets.update(all_dois)
+    else:
+        st.session_state.selected_datasets.difference_update(all_dois)
+    
+    # CRITICAL FIX: Keep the expander open when interacting
+    st.session_state.search_results_expanded = True
+# ====================================================================
 
 # === Step 1: Force OpenAI API Key ===
 if "openai_api_key" not in st.session_state:
@@ -70,7 +98,6 @@ with st.sidebar:
         )
     
     st.title("Configuration")
-    # Rest of the sidebar code...
 
     model_name = st.selectbox(
         "Select Model",
@@ -78,7 +105,7 @@ with st.sidebar:
         index=0,
         key="model_name"
     )
-# Determine initial values for LangSmith inputs based on deployment mode
+
     if DEPLOYMENT_MODE == "local":
         try:
             initial_langsmith_api_key = st.secrets["general"]["langchain_api_key"]
@@ -92,21 +119,18 @@ with st.sidebar:
         initial_langsmith_api_key = ""
         initial_langsmith_project_name = ""
 
-    # LangSmith API key input (pre-filled in local mode if available)
     langsmith_api_key = st.text_input(
         "LangSmith API Key (optional)",
         type="password",
         value=initial_langsmith_api_key,
         key="langsmith_api_key"
     )
-    # LangSmith project name input (pre-filled in local mode if available)
     langsmith_project_name = st.text_input(
         "LangSmith Project Name (optional)",
         value=initial_langsmith_project_name,
         key="langsmith_project_name"
     )
     
-    # Search Mode Toggle in Sidebar
     st.divider()
     st.markdown("### Search Settings")
     search_mode = st.radio(
@@ -118,7 +142,6 @@ with st.sidebar:
     )
     st.session_state.search_mode = search_mode
     
-    # Visual indicator of current mode
     if st.session_state.search_mode == "deep":
         st.info("🔬 **Deep Search Mode**: Will perform multiple search variations and consolidate results for better coverage")
     else:
@@ -137,7 +160,6 @@ if DEPLOYMENT_MODE == "local":
 else:
     langchain_region = "us"  # Default for non-local deployment
 
-# Set the endpoint based on region
 if langchain_region.lower() == "eu":
     langchain_endpoint = "https://eu.api.smith.langchain.com"
 else:
@@ -150,7 +172,7 @@ if langchain_api_key and langchain_project_name:
     os.environ["LANGCHAIN_ENDPOINT"] = langchain_endpoint
     os.environ["LANGCHAIN_REGION"] = langchain_region
 
-# === Step 4: Reload the Config Module so It Picks Up the Updated Environment Variables ===
+# === Step 4: Reload the Config Module ===
 import src.config as config
 importlib.reload(config)
 
@@ -160,7 +182,6 @@ from src.ui.styles import CUSTOM_UI
 from src.utils import log_history_event
 from langchain_core.messages import HumanMessage, AIMessage
 from src.memory import CustomMemorySaver
-
 
 from PIL import Image
 SYSTEM_ICON = "img/11111111.png"
@@ -191,7 +212,7 @@ from main import (
     ensure_thread_id,
 )
 from langchain_community.chat_message_histories import ChatMessageHistory
-from langchain_community.callbacks.streamlit import StreamlitCallbackHandler
+from src.ui.callbacks import SafeStreamlitCallbackHandler
 
 # === Step 6: Initialize Session State ===
 initialize_session_state(st.session_state)
@@ -203,14 +224,17 @@ if "ecologist_agent_used" not in st.session_state:
 if "dataframe_agent_used" not in st.session_state:
     st.session_state.dataframe_agent_used = False
 
+# === STATE INITIALIZATION FOR EXPANDER FIX ===
+if "search_results_expanded" not in st.session_state:
+    st.session_state.search_results_expanded = False  # Hidden by default initially
+
 # === Step 7: Load Custom UI Styles (for example, CSS) ===
 st.markdown(CUSTOM_UI, unsafe_allow_html=True)
 
-# Add this new initialization for search mode
 if "search_mode" not in st.session_state:
-    st.session_state.search_mode = "simple"  # Default to simple search
+    st.session_state.search_mode = "simple"
 
-# === Step 8: Create the Search Agent (which now uses the updated keys) ===
+# === Step 8: Create the Search Agent ===
 search_agent = get_search_agent(
     datasets_info=st.session_state.datasets_info,
     model_name=st.session_state["model_name"],
@@ -218,7 +242,6 @@ search_agent = get_search_agent(
 )
 
 # === Navigation ===
-# Force sync sidebar radio with session state BEFORE widget instantiation
 current_selection = "Dataset Explorer" if st.session_state.current_page == "search" else "Data Agent"
 if "nav_selection" not in st.session_state or st.session_state.nav_selection != current_selection:
     st.session_state.nav_selection = current_selection
@@ -261,52 +284,34 @@ if st.session_state.current_page == "search":
                 # Prepare ZIP download
                 if st.button("📦 Prepare ZIP Download", use_container_width=True):
                     with st.spinner("Downloading and zipping files..."):
-                        # Ensure datasets are fetched first
                         load_selected_datasets_into_cache(st.session_state.selected_datasets, st.session_state)
                         
-                        # Create ZIP
                         import zipfile
                         import io
                         from src.utils.workspace import WorkspaceManager
                         
-                        # We use the main sandbox for the current session
                         thread_id = st.session_state.get("thread_id")
                         sandbox_root = WorkspaceManager.get_sandbox_path(thread_id)
                         
                         zip_buffer = io.BytesIO()
                         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
                             for doi in st.session_state.selected_datasets:
-                                # Find the path in cache
                                 dataset_path, name = st.session_state.datasets_cache.get(doi, (None, None))
                                 if dataset_path and os.path.isdir(dataset_path):
-                                    # Create a clean folder name for the zip
                                     folder_name = f"dataset_{doi.split('/')[-1]}"
-                                    # Add all files in directory to zip
                                     for root, _, files in os.walk(dataset_path):
                                         for file in files:
                                             file_path = os.path.join(root, file)
-                                            # Relative path inside zip: dataset_folder/filename
                                             rel_path = os.path.relpath(file_path, dataset_path)
                                             arc_name = os.path.join(folder_name, rel_path)
                                             zip_file.write(file_path, arc_name)
                                 else:
-                                    # Try to load if missing (just in case)
-                                    logging.warning(f"DOI {doi} not found in cache during ZIP creation, attempting fetch...")
-                                    try:
-                                        from src.search.dataset_utils import fetch_dataset
-                                        # We don't have the exact target_dir here easily without duplicating logic, 
-                                        # but fetch_dataset returns path. 
-                                        # Let's rely on load_selected_datasets_into_cache having run.
-                                        # If it failed, we skip.
-                                        pass 
-                                    except:
-                                        pass
+                                    logging.warning(f"DOI {doi} not found in cache during ZIP creation.")
                         
                         st.session_state.download_zip_data = zip_buffer.getvalue()
                         st.session_state.download_zip_name = f"pangaea_datasets_{uuid.uuid4().hex[:8]}.zip"
                         st.rerun()
 
-                # Show download button if ready
                 if "download_zip_data" in st.session_state:
                     st.download_button(
                         label="⬇️ Download ZIP",
@@ -318,10 +323,8 @@ if st.session_state.current_page == "search":
 
             with col3:
                 if st.button("➡️ Go to Data Agent", use_container_width=True):
-                    # Ensure loaded before switching
                     load_selected_datasets_into_cache(st.session_state.selected_datasets, st.session_state)
                     set_active_datasets_from_selection(st.session_state)
-                    
                     st.session_state.current_page = "data_agent"
                     st.rerun()
             
@@ -341,7 +344,7 @@ if st.session_state.current_page == "search":
         "Processed data of CTD buoys 2019O1 to 2019O8 MOSAiC", 
         "Retrieve Physical oceanography and current velocity data from mooring AK6-1; get it directly from 10.1594/PANGAEA.954299",
         "Get Processed TACE current meter mooring; retireve it directly from 10.1594/PANGAEA.946892",
-        'Download Moored current and temperature measurements in the Faroe Bank Channel; get it using doi: 10.1594/PANGAEA.864110'
+        "Download Moored current and temperature measurements in the Faroe Bank Channel; get it using doi: 10.1594/PANGAEA.864110"
     ]
     selected_query = st.selectbox(
         "Select an example or write down your query:",
@@ -354,9 +357,19 @@ if st.session_state.current_page == "search":
     else:
         set_selected_text(st.session_state, st.session_state.get("selected_text", ""))
 
-# Display chat messages (including any table with initial search results)
+    # Display chat messages
     with chat_placeholder:
-        print(f"DEBUG: USER_ICON type: {type(USER_ICON)}, value: {USER_ICON}")
+        # --- CRITICAL FIX: Pre-calculate the index of the LAST message with a table ---
+        # This allows us to collapse all previous search results automatically
+        last_table_msg_index = -1
+        for idx, msg in enumerate(st.session_state.messages_search):
+            if "table" in msg:
+                content = msg.get("content", "")
+                # Check markers for final results (Search, Deep Search, Filtered)
+                if any(marker in content for marker in ["Search completed:", "Deep search completed:", "Filtered & Sorted:", "search completed:"]):
+                    last_table_msg_index = idx
+        # --------------------------------------------------------------------------
+
         for i, message in enumerate(st.session_state.messages_search):
             if message["role"] == "system":
                 with st.chat_message(message["role"], avatar=SYSTEM_ICON):
@@ -366,32 +379,32 @@ if st.session_state.current_page == "search":
                     st.markdown(message["content"])
             else:  # assistant messages
                 with st.chat_message(message["role"], avatar=SYSTEM_ICON):
-                    # Skip displaying raw JSON arrays (debug output)
                     content = message["content"]
                     if content.strip().startswith("[") and content.strip().endswith("]"):
-                        # This looks like a raw JSON array, skip it or show in debug expander
                         with st.expander("🐛 Debug output", expanded=False):
                             st.code(content, language="json")
                     elif "Direct access to DOIs:" in content:
-                        # Show DOI access in a compact expander
                         with st.expander("📋 DOIs accessed", expanded=False):
                             st.markdown(content)
                     else:
                         st.markdown(content)
                     
-            # Handle tables differently based on whether it's the final consolidated result
+            # Handle tables
             if "table" in message:
                 df = pd.read_json(StringIO(message["table"]), orient="split")
-                
-                # Check if this is the final consolidated result
                 content = message.get("content", "")
+                
+                # FIX: Treat "Filtered & Sorted" as a Final Result so it gets proper UI treatment
                 is_final_result = ("Search completed:" in content or 
                                  "Deep search completed:" in content or
-                                 "search completed:" in content.lower())
+                                 "search completed:" in content.lower() or
+                                 "Filtered & Sorted:" in content)
                 
-                # For intermediate results, use an expander (collapsed by default)
+                # FIX: Check if this is the MOST RECENT table
+                is_last_table = (i == last_table_msg_index)
+
                 if not is_final_result:
-                    # Extract info about this intermediate result
+                    # Intermediate results (always collapsed)
                     expander_title = "🔍 Show intermediate search results"
                     if "Datasets Information:" in message.get("content", ""):
                         expander_title = f"🔍 Intermediate results ({len(df)} datasets found)"
@@ -402,7 +415,6 @@ if st.session_state.current_page == "search":
                             cols[0].write(f"**#{row['Number']}**")
                             cols[1].write(f"**Name:** {row['Name']}")
                             cols[2].write(f"**DOI:** [{row['DOI']}]({row['DOI']})")
-                            # For intermediate results, show description directly (no nested expander)
                             with cols[3]:
                                 st.caption("Description:")
                                 st.text(row['Description'][:200] + "..." if len(row['Description']) > 200 else row['Description'])
@@ -412,37 +424,59 @@ if st.session_state.current_page == "search":
                             cols[4].write(f"**Parameters:** {', '.join(parameters_list)}")
                             checkbox_key = f"select-intermediate-{i}-{index}"
                             with cols[5]:
-                                selected = st.checkbox("Select", key=checkbox_key)
-                            if selected:
-                                st.session_state.selected_datasets.add(row['DOI'])
-                            else:
-                                st.session_state.selected_datasets.discard(row['DOI'])
+                                st.checkbox(
+                                    "Select", 
+                                    key=checkbox_key, 
+                                    value=row['DOI'] in st.session_state.selected_datasets,
+                                    on_change=toggle_dataset_selection,
+                                    args=(row['DOI'],)
+                                )
                 else:
-                    # For final results, wrap in expander to avoid massive scrolling
-                    # expanded=False by default per user request
-                    with st.expander(f"✅ Search Results ({len(df)} datasets)", expanded=False):
+                    # For final results / Filtered results
+                    # FIX: Only expand if it's the LAST table AND expansion state is True
+                    should_expand = st.session_state.search_results_expanded if is_last_table else False
+                    
+                    LIMIT_ROWS = 50
+                    total_rows = len(df)
+                    display_df = df.head(LIMIT_ROWS)
+                    
+                    display_title = f"✅ Search Results ({total_rows} datasets)"
+                    if "Filtered & Sorted" in content:
+                        display_title = f"✨ Filtered & Sorted Results ({total_rows} datasets)"
+
+                    if total_rows > LIMIT_ROWS:
+                         display_title += f" - Showing first {LIMIT_ROWS}"
+
+                    if not is_last_table:
+                        display_title = f"📜 History: {display_title}"
+
+                    with st.expander(display_title, expanded=should_expand):
+                        
+                        if total_rows > LIMIT_ROWS:
+                            st.warning(f"⚠️ Displaying top {LIMIT_ROWS} results to prevent browser lag. Use more specific search queries to filter.")
+                            
                         # Add select all checkbox at the top
                         cols = st.columns([1, 2, 2, 4, 2, 1])
                         with cols[5]:
-                            all_dois_in_table = set(df['DOI'].tolist())
-                            all_selected = all_dois_in_table.issubset(st.session_state.selected_datasets)
+                            visible_dois = set(display_df['DOI'].tolist())
+                            all_selected = visible_dois.issubset(st.session_state.selected_datasets)
                             
-                            select_all = st.checkbox("Select All", key=f"select_all_{i}", value=all_selected)
-                            if select_all and not all_selected:
-                                st.session_state.selected_datasets.update(all_dois_in_table)
-                                st.rerun()
-                            elif not select_all and all_selected:
-                                st.session_state.selected_datasets -= all_dois_in_table
-                                st.rerun()
+                            select_all_key = f"select_all_{i}"
+                            st.checkbox(
+                                "Select All", 
+                                key=select_all_key, 
+                                value=all_selected,
+                                on_change=toggle_select_all,
+                                args=(visible_dois, select_all_key)
+                            )
                         
-                        for index, row in df.iterrows():
+                        # Iterate over display_df
+                        for index, row in display_df.iterrows():
                             cols = st.columns([1, 2, 2, 4, 2, 1])
                             cols[0].write(f"**#{row['Number']}**")
                             cols[1].write(f"**Name:** {row['Name']}")
                             cols[2].write(f"**DOI:** [{row['DOI']}]({row['DOI']})")
                             with cols[3]:
-                                # Workaround for Streamlit nested expander limitation:
-                                # Show truncated text with full description in tooltip
                                 desc_text = row['Description']
                                 short_desc = desc_text[:150] + "..." if len(desc_text) > 150 else desc_text
                                 st.markdown(short_desc, help=desc_text)
@@ -450,13 +484,15 @@ if st.session_state.current_page == "search":
                             if len(parameters_list) > 7:
                                 parameters_list = parameters_list[:7] + ["..."]
                             cols[4].write(f"**Parameters:** {', '.join(parameters_list)}")
+                            
                             checkbox_key = f"select-final-{i}-{index}"
-                            with cols[5]:
-                                selected = st.checkbox("Select", key=checkbox_key, value=row['DOI'] in st.session_state.selected_datasets)
-                            if selected:
-                                st.session_state.selected_datasets.add(row['DOI'])
-                            else:
-                                st.session_state.selected_datasets.discard(row['DOI'])
+                            st.checkbox(
+                                "Select", 
+                                key=checkbox_key, 
+                                value=row['DOI'] in st.session_state.selected_datasets,
+                                on_change=toggle_dataset_selection,
+                                args=(row['DOI'],)
+                            )
 
     # --- Single search input form ---
     with chat_input_container:
@@ -491,8 +527,12 @@ if st.session_state.current_page == "search":
                 key="chat_input",
             )
             submit_button = st.form_submit_button(label='Send')
+        
         if submit_button and user_input:
             st.session_state.selected_text = ""
+            
+            # CRITICAL: Reset expansion state for NEW search (hidden by default)
+            st.session_state.search_results_expanded = False
             
             # 1. ADD USER MESSAGE FIRST
             st.session_state.messages_search.append({"role": "user", "content": user_input})
@@ -585,6 +625,10 @@ if st.session_state.current_page == "search":
             if st.session_state.datasets_info is not None:
                 st.session_state.search_total = len(st.session_state.datasets_info)
             set_show_dataset(st.session_state, False)
+            
+            # Force open the NEW result immediately
+            st.session_state.search_results_expanded = True
+            
             st.rerun()
 
     # --- Load More button ---
@@ -604,9 +648,11 @@ if st.session_state.current_page == "search":
                         [st.session_state.datasets_info, new_df], ignore_index=True
                     )
                     st.session_state.search_offset = offset + new_df.shape[0]
+                    # Also expand results when loading more so user sees them
+                    st.session_state.search_results_expanded = True
                     st.rerun()
 
-    # Display active datasets (if any) and allow downloads or sending one dataset to Data Agent
+    # Display active datasets (if any)
     if st.session_state.active_datasets:
         for doi in st.session_state.active_datasets:
             dataset, name = st.session_state.datasets_cache.get(doi, (None, None))
@@ -646,25 +692,21 @@ elif st.session_state.current_page == "data_agent":
     message_placeholder = st.empty()
 
     # --- START: Restore Buttons ---
-    logging.info("Entered Data Agent page") # Keep this log line
+    logging.info("Entered Data Agent page") 
 
     # --- Add Button Row ---
-    button_cols = st.columns([1, 1, 1, 3]) # Adjust ratios as needed
+    button_cols = st.columns([1, 1, 1, 1, 2])
 
     with button_cols[0]:
-        # Save history button
         if st.button("Export History", key="export_history_data_agent", use_container_width=True):
             history_data = st.session_state.get("execution_history", [])
             try:
-                # Attempt to pretty-print JSON
                 json_string = json.dumps(history_data, indent=4, ensure_ascii=False)
             except TypeError as e:
-                # Fallback for objects that aren't JSON serializable
                 logging.error(f"Error serializing history: {e}. Using simple string conversion.")
                 json_string = str(history_data)
 
-            # Use a unique key for the download button itself to avoid conflicts
-            download_key = f"download_hist_{uuid.uuid4()}" 
+            download_key = f"download_hist_{uuid.uuid4()}"
             st.download_button(
                 label="Download History (JSON)",
                 data=json_string.encode('utf-8'),
@@ -675,24 +717,29 @@ elif st.session_state.current_page == "data_agent":
             logging.info("Initiated session history download")
 
     with button_cols[1]:
-        # Clear History button
         if st.button("Clear History", key="clear_history_data_agent", use_container_width=True):
             st.session_state.messages_data_agent = []
             st.session_state.intermediate_steps = []
-            # Optionally clear execution history as well
-            # st.session_state.execution_history = []
             logging.info("Cleared Data Agent history")
             st.rerun()
 
     with button_cols[2]:
-         # Back to Search button
          if st.button("Back to Search", key="back_to_search_data_agent", use_container_width=True, type="secondary"):
              st.session_state.current_page = "search"
              logging.info("Navigated back to Search page")
              st.rerun()
 
-    st.markdown("<hr style='margin-top: 0.5rem; margin-bottom: 1rem;'>", unsafe_allow_html=True) # Add a separator line with adjusted margin
-    # --- END: Restore Buttons ---
+    with button_cols[3]:
+        if "datasets_info" in st.session_state and isinstance(st.session_state.datasets_info, pd.DataFrame) and not st.session_state.datasets_info.empty:
+            if st.button("🗑️ Clear Workspace", key="clear_workspace_btn_top", use_container_width=True):
+                st.session_state.datasets_info = None
+                st.session_state.messages_search.append({
+                    "role": "assistant",
+                    "content": "Workspace cleared."
+                })
+                st.rerun()
+
+    st.markdown("<hr style='margin-top: 0.5rem; margin-bottom: 1rem;'>", unsafe_allow_html=True)
 
     # --- START: Display Agent Steps Title with Icon ---
     agent_icon_path = "img/agent_icon.png" 
@@ -700,32 +747,25 @@ elif st.session_state.current_page == "data_agent":
     try:
         if Path(agent_icon_path).exists():
             agent_icon_base64 = img_to_base64(agent_icon_path)
-            # Use markdown with HTML to display icon and text, styled like a subheader
             st.markdown(
                 f'''<div style="display: flex; align-items: center; margin-bottom: 0.5rem;">
-                       <img src="data:image/png;base64,{agent_icon_base64}" width="24" height="24" style="margin-right: 10px; vertical-align: middle;">
-                       <h3 style="margin: 0; padding: 0; border: none; background: none; text-shadow: none; vertical-align: middle;">{agent_steps_label}</h3>
-                   </div>''',
+                        <img src="data:image/png;base64,{agent_icon_base64}" width="24" height="24" style="margin-right: 10px; vertical-align: middle;">
+                        <h3 style="margin: 0; padding: 0; border: none; background: none; text-shadow: none; vertical-align: middle;">{agent_steps_label}</h3>
+                    </div>''',
                 unsafe_allow_html=True
             )
         else:
-            # Fallback if icon not found
             st.subheader(f"🕵️ {agent_steps_label}")
             logging.warning(f"Agent icon not found at: {agent_icon_path}")
     except Exception as e:
-        # Fallback on any error during icon loading/encoding
         st.subheader(f"🕵️ {agent_steps_label}")
         logging.error(f"Error loading agent icon: {e}")
-    # --- END: Display Agent Steps Title with Icon ---
 
-    # Define the container for the callback handler output
     callback_container = st.container()
-    st.markdown("---") # Optional separator
+    st.markdown("---") 
 
-    #Render Directory
     render_directory_explorer()
 
-    # --- Existing Code Continues Below ---
     datasets_info = get_datasets_info_for_active_datasets(st.session_state)
     logging.info(f"Loaded {len(datasets_info)} datasets for Data Agent")
     ensure_memory(st.session_state)
@@ -741,11 +781,9 @@ elif st.session_state.current_page == "data_agent":
             {"page": "data_agent", "content": user_input}
         )
         user_query = user_input
-        # Show "processing" message
         with message_placeholder:
             st.info("Your request is being processed. You can see the progress below in the Agent Steps panel.")
-        # Instantiate the StreamlitCallbackHandler
-        st_callback = StreamlitCallbackHandler(
+        st_callback = SafeStreamlitCallbackHandler(
             parent_container=callback_container,
             max_thought_containers=4,
             expand_new_thoughts=True,
@@ -762,22 +800,18 @@ elif st.session_state.current_page == "data_agent":
             try:
                 new_content = response['messages'][-1].content
                 
-                # FIXED: Only get plot_images from the CURRENT execution
                 plot_images = []
                 
-                # 1. Check if response has plot_images
                 if 'plot_images' in response and response['plot_images']:
                     plot_images = response.get("plot_images", [])
                     logging.info(f"Found {len(plot_images)} plots in response")
                 
-                # 2. If not in response, check ONLY the last message
                 if not plot_images:
                     last_msg = response['messages'][-1]
                     if hasattr(last_msg, 'additional_kwargs') and 'plot_images' in last_msg.additional_kwargs:
                         plot_images = last_msg.additional_kwargs.get("plot_images", [])
                         logging.info(f"Found {len(plot_images)} plots in last message")
                 
-                # 3. Validate that plot files actually exist
                 plot_images = [img for img in plot_images if img and os.path.exists(img)]
                 
                 logging.info(f"Final plot_images for THIS response: {plot_images}")
@@ -786,7 +820,6 @@ elif st.session_state.current_page == "data_agent":
                 ecologist_used = response.get("ecologist_agent_used", False)
                 visualization_used = response.get("visualization_agent_used", False)
                 
-                # Extract from last message if not in response
                 if hasattr(response['messages'][-1], 'additional_kwargs'):
                     last_kwargs = response['messages'][-1].additional_kwargs
                     oceanographer_used = oceanographer_used or last_kwargs.get("oceanographer_used", False)
@@ -796,7 +829,7 @@ elif st.session_state.current_page == "data_agent":
                 st.session_state.messages_data_agent.append({
                     "role": "assistant",
                     "content": new_content,
-                    "plot_images": plot_images,  # Only images from THIS execution
+                    "plot_images": plot_images,
                     "oceanographer_used": oceanographer_used,
                     "ecologist_used": ecologist_used,
                     "visualization_agent_used": visualization_used
@@ -828,36 +861,85 @@ elif st.session_state.current_page == "data_agent":
             else:
                 with st.chat_message(message["role"], avatar=SYSTEM_ICON):
                     st.markdown(message["content"])
-                    # Display ONLY the plot images that belong to THIS specific message
+
+                    # === THUMBNAIL GRID FOR MULTIPLE IMAGES ===
                     if "plot_images" in message and message["plot_images"]:
                         logging.info(f"Message has {len(message['plot_images'])} plot images")
+
+                        # 1. Collect valid plot items first
+                        valid_items = []
                         for plot_info in message["plot_images"]:
+                            path = None
+                            code = None
+
+                            # Handle both tuple (path, code) and string path formats
                             if isinstance(plot_info, tuple):
-                                plot_path, code_path = plot_info
-                                if os.path.exists(plot_path):
-                                    col1, col2, col3 = st.columns([1, 2, 1])
-                                    with col2:
-                                        st.image(plot_path, caption='Generated Plot', use_container_width=True)
-                                    if os.path.exists(code_path):
-                                        with open(code_path, 'r') as f:
-                                            code = f.read()
-                                        st.code(code, language='python')
+                                path = plot_info[0]
+                                if len(plot_info) > 1:
+                                    code = plot_info[1]
                             else:
-                                # Only show if the file still exists (handles sandbox switching)
-                                if os.path.exists(plot_info):
-                                    logging.info(f"Displaying plot: {plot_info}")
-                                    col1, col2, col3 = st.columns([1, 2, 1])
-                                    with col2:
-                                        st.image(plot_info, caption='Generated Plot', use_container_width=True)
-                                else:
-                                    logging.warning(f"Plot file no longer exists (different sandbox?): {plot_info}")
+                                path = plot_info
+
+                            if path and os.path.exists(path):
+                                valid_items.append({"path": path, "code": code})
+                            else:
+                                logging.warning(f"Plot file not found: {path}")
+
+                        if valid_items:
+                            # CASE A: Single Image (Keep large centered display)
+                            if len(valid_items) == 1:
+                                item = valid_items[0]
+                                col1, col2, col3 = st.columns([1, 2, 1])
+                                with col2:
+                                    st.image(item["path"], caption='Generated Plot', use_container_width=True)
+
+                                if item["code"] and os.path.exists(item["code"]):
+                                    with open(item["code"], 'r') as f:
+                                        st.code(f.read(), language='python')
+
+                            # CASE B: Multiple Images (Grid of Small Thumbnails)
+                            else:
+                                logging.info(f"Displaying {len(valid_items)} plots in grid")
+                                st.caption(f"🖼️ **Generated Plots ({len(valid_items)})** - Click to zoom")
+
+                                # Grid Configuration: 5 images per row = small icons
+                                COLS_PER_ROW = 5
+
+                                # Process images in batches (rows)
+                                for i in range(0, len(valid_items), COLS_PER_ROW):
+                                    row_items = valid_items[i:i + COLS_PER_ROW]
+                                    cols = st.columns(COLS_PER_ROW)
+
+                                    for idx, item in enumerate(row_items):
+                                        with cols[idx]:
+                                            # use_container_width inside small column = thumbnail
+                                            # Streamlit adds fullscreen zoom button on hover
+                                            st.image(
+                                                item["path"],
+                                                caption=os.path.basename(item["path"]),
+                                                use_container_width=True
+                                            )
+
+                                # Consolidate code snippets at the bottom
+                                has_code = any(item["code"] and os.path.exists(item["code"]) for item in valid_items)
+                                if has_code:
+                                    with st.expander("🐍 View Generation Code"):
+                                        for item in valid_items:
+                                            if item["code"] and os.path.exists(item["code"]):
+                                                st.markdown(f"**{os.path.basename(item['path'])}:**")
+                                                with open(item["code"], 'r') as f:
+                                                    st.code(f.read(), language='python')
+                                                st.divider()
+
                 st.session_state.visualization_agent_used = False
         
-        # Display datasets info
+        # Display datasets info with count header
+        if datasets_info:
+            st.success(f"**Active Workspace:** {len(datasets_info)} datasets loaded")
+
         for info in datasets_info:
             logging.info(f"Displaying dataset in Data Agent: DOI {info['doi']}, type: {info['data_type']}")
             with st.expander(f"Dataset: {info['name']}", expanded=False):
-                # Add clickable DOI link
                 st.markdown(f"**DOI:** [{info['doi']}]({info['doi']})")
                 st.write(f"**Name:** {info['name']}")
                 st.write(f"**Type:** {info['data_type']}")

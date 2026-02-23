@@ -6,20 +6,28 @@ import functools
 import traceback
 import os
 from typing import List, TypedDict, Dict, Sequence
-import streamlit as st
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.output_parsers.openai_functions import JsonOutputFunctionsParser
 from langgraph.graph import StateGraph, END
 
-from .base import agent_node
+from .base import agent_node, compress_messages_to_summary
 from .visualization_agent import initialize_agents
 from .writer_agent import create_writer_agent
 from ..tools.planning_tools import planning_tool
 from ..llm_factory import get_llm  # Use the new factory
 
-def create_supervisor_agent(user_query, datasets_info, memory):
+# =============================================================================
+# SMART COMPRESSION MEMORY CONFIGURATION
+# =============================================================================
+# When message count exceeds this, we compress old messages into chat_summary
+MESSAGE_COMPRESSION_THRESHOLD = 8
+# After compression, we keep this many recent messages in the "short-term memory"
+MESSAGES_TO_KEEP_AFTER_COMPRESSION = 4
+
+def create_supervisor_agent(user_query, datasets_info, memory, session_id="default"):
     """
     Creates a supervisor agent to coordinate between different specialized agents.
     
@@ -27,12 +35,13 @@ def create_supervisor_agent(user_query, datasets_info, memory):
         user_query (str): The user's query
         datasets_info (list): Information about available datasets
         memory: The memory checkpoint saver
+        session_id (str): Thread ID for the session
         
     Returns:
         Graph: The compiled supervisor agent workflow
     """
     # Initialize agents
-    oceanographer_agent, ecologist_agent, visualization_agent, dataframe_agent = initialize_agents(user_query, datasets_info)
+    oceanographer_agent, ecologist_agent, visualization_agent, dataframe_agent = initialize_agents(user_query, datasets_info, session_id=session_id)
     writer_agent = create_writer_agent(datasets_info)
     logging.info("Initialized all agents, including WriterAgent")
 
@@ -191,6 +200,7 @@ For visualization and data analysis requests (like plotting, data manipulation, 
     # Create the supervisor prompt template
     prompt_supervisor = ChatPromptTemplate.from_messages([
         ("system", system_prompt_supervisor),
+        ("system", "SESSION CONTEXT (Summary of previous steps):\n{chat_summary}"),
         MessagesPlaceholder(variable_name="messages"),
         ("system", "Current plan: {plan}"),
         MessagesPlaceholder(variable_name="agent_scratchpad"),
@@ -216,7 +226,8 @@ For visualization and data analysis requests (like plotting, data manipulation, 
         {
             "messages": lambda x: x["messages"],
             "agent_scratchpad": lambda x: x["agent_scratchpad"],
-            "plan": lambda x: json.dumps(x["plan"] if x.get("plan") else [])
+            "plan": lambda x: json.dumps(x["plan"] if x.get("plan") else []),
+            "chat_summary": lambda x: x.get("chat_summary", "No previous context.")
         }
         | prompt_supervisor
         | llm_with_tools
@@ -234,6 +245,28 @@ For visualization and data analysis requests (like plotting, data manipulation, 
             state["next"] = "FINISH"
             state["messages"].append(AIMessage(content="Error: Maximum workflow iterations reached. Aborting.", name="Supervisor"))
             return state
+
+        # ======================================================================
+        # SMART COMPRESSION MEMORY: Compress old messages when threshold exceeded
+        # This moves old context from messages list to chat_summary string
+        # ======================================================================
+        message_count = len(state.get("messages", []))
+        if message_count > MESSAGE_COMPRESSION_THRESHOLD:
+            logging.info(f"🧠 MEMORY COMPRESSION: {message_count} messages exceeds threshold of {MESSAGE_COMPRESSION_THRESHOLD}")
+
+            # Split: old messages to compress, recent messages to keep
+            messages_to_compress = state["messages"][:-MESSAGES_TO_KEEP_AFTER_COMPRESSION]
+            messages_to_keep = state["messages"][-MESSAGES_TO_KEEP_AFTER_COMPRESSION:]
+
+            # Compress old messages into the existing summary
+            existing_summary = state.get("chat_summary", "")
+            new_summary = compress_messages_to_summary(messages_to_compress, existing_summary)
+
+            # Update state: compressed summary + recent messages
+            state["chat_summary"] = new_summary
+            state["messages"] = messages_to_keep
+
+            logging.info(f"🧠 MEMORY COMPRESSION COMPLETE: Compressed {len(messages_to_compress)} messages, keeping {len(messages_to_keep)}. Summary length: {len(new_summary)} chars")
 
         # Mark the last agent's task as completed
         last_message = state["messages"][-1]
@@ -288,13 +321,17 @@ For visualization and data analysis requests (like plotting, data manipulation, 
 
         return state
 
-    def supervisor_response(state):
+    def supervisor_response(state, config: RunnableConfig = None):
         """
         Responsible for generating the final response after all agents have contributed.
         Crucially maintains access to the conversation history and previous agent outputs.
         Includes extensive debugging to troubleshoot dataset parameter passing issues.
         """
         from main import get_datasets_info_for_active_datasets
+        from ..utils.session_manager import SessionManager
+        
+        session_id = config.get("configurable", {}).get("thread_id", "default") if config else "default"
+        session_data = SessionManager.get_session(session_id)
         
         # Begin debugging
         logging.info("\n==================== SUPERVISOR RESPONSE DEBUGGING ====================")
@@ -314,14 +351,14 @@ For visualization and data analysis requests (like plotting, data manipulation, 
         logging.info(f"Using model: {llm.model_name}")
         
         # Debug session state keys
-        session_state_keys = list(st.session_state.keys())
+        session_state_keys = list(session_data.keys())
         logging.info(f"Available session_state keys: {session_state_keys}")
         
         # Extract datasets info with extensive debugging
         try:
             # Debug the datasets retrieval function
             logging.info("Attempting to get active datasets info...")
-            active_datasets_info = get_datasets_info_for_active_datasets(st.session_state)
+            active_datasets_info = get_datasets_info_for_active_datasets(session_data)
             
             # Verify what we received
             logging.info(f"Type of active_datasets_info: {type(active_datasets_info)}")
@@ -510,18 +547,26 @@ Please provide a response to the latest user query, taking into account the conv
         # Build conversation history for context
         try:
             full_history = "\n".join([
-                f"{msg.name if hasattr(msg, 'name') else 'User'}: {msg.content}" 
-                for msg in all_messages 
+                f"{msg.name if hasattr(msg, 'name') else 'User'}: {msg.content}"
+                for msg in all_messages
                 if hasattr(msg, "content")
             ])
-            
+
             logging.info(f"Built conversation history, length: {len(full_history)}")
             logging.info(f"History preview: {full_history[:200]}...")
-            
+
         except Exception as e:
             logging.error(f"Error building conversation history: {str(e)}")
             logging.error(traceback.format_exc())
             full_history = "Error retrieving conversation history."
+
+        # ==========================================================================
+        # SMART COMPRESSION MEMORY: Include compressed history in context
+        # ==========================================================================
+        chat_summary = state.get("chat_summary", "")
+        if chat_summary:
+            full_history = f"=== COMPRESSED SESSION HISTORY ===\n{chat_summary}\n\n=== RECENT MESSAGES ===\n{full_history}"
+            logging.info(f"Included chat_summary ({len(chat_summary)} chars) in supervisor response context")
         
         # Prepare final prompt and invoke LLM
         prompt = f"{system_message}\n\nConversation history:\n{full_history}"
@@ -586,9 +631,10 @@ Please provide a response to the latest user query, taking into account the conv
         
         return state
 
-    # Define the agent state
+    # Define the agent state with SMART COMPRESSION MEMORY
     class AgentState(TypedDict):
-        messages: Sequence[BaseMessage]
+        messages: Sequence[BaseMessage]  # Short-term memory (recent messages)
+        chat_summary: str  # Long-term memory (compressed history)
         next: str
         agent_scratchpad: Sequence[BaseMessage]
         user_query: str
@@ -663,7 +709,8 @@ def create_and_invoke_supervisor_agent(user_query: str, datasets_info: list, mem
         elif info['data_type'] == "pandas DataFrame":
             dataset_globals[var_name] = info['dataset']
     
-    graph = create_supervisor_agent(user_query, datasets_info, memory)
+    session_id = session_data.get('thread_id', str(uuid.uuid4()))
+    graph = create_supervisor_agent(user_query, datasets_info, memory, session_id=session_id)
     
     if graph is None:
         session_data["processing"] = False
@@ -678,9 +725,17 @@ def create_and_invoke_supervisor_agent(user_query: str, datasets_info: list, mem
         else:
             messages.append(AIMessage(content=message["content"], name=message["role"]))
 
-    limited_messages = messages[-10:]
+    # SMART COMPRESSION MEMORY: Don't limit messages arbitrarily here.
+    # The supervisor will handle compression when the threshold is exceeded.
+    # However, we still want to be reasonable on initial load.
+    limited_messages = messages[-15:] if len(messages) > 15 else messages
+
+    # Try to restore chat_summary from session state if it exists (for conversation continuity)
+    existing_summary = session_data.get("chat_summary", "")
+
     initial_state = {
         "messages": limited_messages,
+        "chat_summary": existing_summary,  # SMART COMPRESSION: Long-term memory
         "next": "supervisor",
         "agent_scratchpad": [],
         "input": user_query,
@@ -688,6 +743,8 @@ def create_and_invoke_supervisor_agent(user_query: str, datasets_info: list, mem
         "last_agent_message": "",
         "plan": []  # Added plan to initial state
     }
+
+    logging.info(f"Initial state: {len(limited_messages)} messages, {len(existing_summary)} chars of chat_summary")
 
     config = {
         "configurable": {"thread_id": session_data.get('thread_id', str(uuid.uuid4())), "recursion_limit": 7}
@@ -701,18 +758,26 @@ def create_and_invoke_supervisor_agent(user_query: str, datasets_info: list, mem
     try:
         response = graph.invoke(initial_state, config=config)
         session_data["processing"] = False
-        
+
         # CRITICAL: Ensure plot_images are passed to the response
         if "plot_images" not in response:
             response["plot_images"] = []
-        
+
         # Extract plot_images from the final message if needed
         if response.get("messages"):
             last_msg = response["messages"][-1]
             if hasattr(last_msg, 'additional_kwargs') and 'plot_images' in last_msg.additional_kwargs:
                 response["plot_images"] = last_msg.additional_kwargs.get("plot_images", [])
                 logging.info(f"Extracted {len(response['plot_images'])} plot images from final message")
-        
+
+        # ==========================================================================
+        # SMART COMPRESSION MEMORY: Persist chat_summary to session state
+        # This allows memory to persist across multiple user queries
+        # ==========================================================================
+        if response.get("chat_summary"):
+            session_data["chat_summary"] = response["chat_summary"]
+            logging.info(f"Persisted chat_summary to session: {len(response['chat_summary'])} chars")
+
         return response
     except Exception as e:
         session_data["processing"] = False

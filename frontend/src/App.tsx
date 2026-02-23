@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Bot, Map as MapIcon, Settings, Loader2 } from 'lucide-react';
+import { Bot, Map as MapIcon, Settings, Loader2, ChevronDown } from 'lucide-react';
 import { apiClient } from './api/client';
 import { DatasetExplorer } from './components/DatasetExplorer';
 import { DataAgent } from './components/DataAgent';
@@ -8,13 +8,21 @@ function App() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'explorer' | 'agent'>('explorer');
   const [isInitializing, setIsInitializing] = useState(true);
+  const [models, setModels] = useState<string[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>('');
 
   // Initialize Session on Mount
   useEffect(() => {
     async function initSession() {
       try {
-        const session = await apiClient.createSession();
+        // Fetch models list and create session in parallel
+        const [session, modelsData] = await Promise.all([
+          apiClient.createSession(),
+          apiClient.getModels(),
+        ]);
         setSessionId(session.session_id);
+        setModels(modelsData.models);
+        setSelectedModel(modelsData.default);
       } catch (err) {
         console.error("Failed to initialize session", err);
       } finally {
@@ -23,6 +31,18 @@ function App() {
     }
     initSession();
   }, []);
+
+  const handleModelChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const newModel = e.target.value;
+    setSelectedModel(newModel);
+    if (sessionId) {
+      try {
+        await apiClient.setModel(sessionId, newModel);
+      } catch (err) {
+        console.error("Failed to set model", err);
+      }
+    }
+  };
 
   if (isInitializing || !sessionId) {
     return (
@@ -74,6 +94,20 @@ function App() {
             Pangaea <span className="text-transparent bg-clip-text bg-gradient-to-r from-teal-400 to-cyan-400 font-bold">GPT</span>
           </h1>
           <div className="ml-auto flex items-center gap-4">
+            {/* Model Selector */}
+            <div className="relative">
+              <select
+                id="model-selector"
+                value={selectedModel}
+                onChange={handleModelChange}
+                className="appearance-none bg-slate-900/80 border border-white/10 text-slate-200 text-xs font-mono rounded-lg pl-3 pr-8 py-1.5 focus:outline-none focus:ring-1 focus:ring-teal-500/50 focus:border-teal-500/50 cursor-pointer hover:border-white/20 transition-colors shadow-inner"
+              >
+                {models.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+              <ChevronDown size={12} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+            </div>
             <span className="flex items-center gap-2 text-xs text-teal-400 bg-teal-400/10 px-3 py-1.5 rounded-full font-medium border border-teal-400/20 uppercase tracking-wider shadow-[0_0_10px_rgba(20,184,166,0.1)]">
               <span className="w-2 h-2 rounded-full bg-teal-400 shadow-[0_0_5px_rgba(20,184,166,0.8)] animate-pulse"></span>
               API Online
@@ -101,3 +135,4 @@ function App() {
 }
 
 export default App;
+

@@ -16,20 +16,20 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # LangChain v1: legacy chains/memory live in langchain-classic
 try:
-    from langchain_classic.chains import ConversationalRetrievalChain
+    from langchain.chains import ConversationalRetrievalChain
 except Exception:
-    from langchain_classic.chains.conversational_retrieval.base import ConversationalRetrievalChain
+    from langchain.chains.conversational_retrieval.base import ConversationalRetrievalChain
 
 try:
-    from langchain_classic.memory import ConversationBufferMemory
+    from langchain.memory import ConversationBufferMemory
 except Exception:
-    from langchain_classic.memory.buffer import ConversationBufferMemory
+    from langchain.memory.buffer import ConversationBufferMemory
 
 # ParentDocumentRetriever still comes from langchain (v1)
 try:
     from langchain.retrievers import ParentDocumentRetriever
 except Exception:
-    from langchain_classic.retrievers.parent_document_retriever import ParentDocumentRetriever
+    from langchain.retrievers.parent_document_retriever import ParentDocumentRetriever
 
 
 

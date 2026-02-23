@@ -2,7 +2,6 @@
 import base64
 import os
 import logging
-import streamlit as st  # Import streamlit to access session state
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
 from openai import OpenAI
@@ -79,7 +78,7 @@ BE CRITICAL of any text overlap or readability issues. A visualization with over
 Please provide a structured review addressing each of these points. Conclude with an overall assessment of the image quality, highlighting any significant issues or exemplary aspects. Finally, give the image a score out of 10."""
     openai_client = OpenAI(api_key=API_KEY)
     response = openai_client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-5.2",
         messages=[
             {
                 "role": "user",
@@ -94,7 +93,7 @@ Please provide a structured review addressing each of these points. Conclude wit
                 ]
             }
         ],
-        max_tokens=1000
+        max_completion_tokens=1000
     )
 
     return response.choices[0].message.content

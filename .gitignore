@@ -44,3 +44,48 @@ tmp/sandbox/
 #Ignore plotting_dat
 data/plotting_data
 data/publication_database/
+
+# Data files and caches
+data/examples_database/
+data/dataset_cache.json
+data/era5_*.zarr/
+*.sqlite3
+
+# Logs and test output
+*.log
+test_*.py
+test_*.log
+
+# Build artifacts and temp
+.coverage
+backend.log
+backend_debug.log
+frontend.log
+results.txt
+all_changes*.txt
+pseudo_code.txt
+project_structure*.txt
+evaluation_prompt_*.txt
+CLI_README.md
+
+# Agent/IDE folders
+.agents/
+CLAUDE_CODE_FOLDER/
+.gemini/
+
+# Benchmark runs/data
+bench/analysis_runs/
+bench/analysis_post_process/
+bench/search/
+cli_output/
+
+# Scripts not part of core
+clean_sandbox.py
+run.py
+run_all.py
+run_benchmark.py
+save_new.py
+setup_env.sh
+
+# Paper folder
+paper/

@@ -17,7 +17,7 @@ from ..search.search_pg_default import pg_search_default
 
 class ParallelSearchArgs(BaseModel):
     search_queries: List[str] = Field(description="List of 2-3 SEARCH QUERY STRINGS. Example: ['MOSAiC track', 'MOSAiC wind data']")
-    count_per_query: Optional[int] = Field(default=20, description="Results per query. Default 20 (fast). Max 50.")
+    count_per_query: Optional[int] = Field(default=30, description="Results per query. Default 30 (for benchmark comparability). Max 50.")
     mindate: Optional[str] = Field(default=None, description="Minimum date in 'YYYY-MM-DD' format")
     maxdate: Optional[str] = Field(default=None, description="Maximum date in 'YYYY-MM-DD' format")
     minlat: Optional[float] = Field(default=None, description="Minimum latitude in decimal degrees")

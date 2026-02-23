@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Loader2, Bot, AlertCircle } from 'lucide-react';
+import { Send, Loader2, Bot, AlertCircle, Trash2, Download } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { AgentWebSocket } from '../api/client';
 
@@ -53,12 +53,7 @@ export function DataAgent({ sessionId }: { sessionId: string }) {
             () => setIsConnected(false)
         );
 
-        // We could override the onopen if we extended AgentWebSocket to take it,
-        // but for now we'll just set it directly after connect since we know it's a synchronous Object creation
-        // A better pattern is to pass an onConnect callback to AgentWebSocket constructor.
         wsRef.current.connect();
-
-        // Use a timeout to avoid synchronous setState during render cycle
         setTimeout(() => setIsConnected(true), 0);
 
         return () => {
@@ -83,8 +78,46 @@ export function DataAgent({ sessionId }: { sessionId: string }) {
         setActiveStatus("Initializing agents...");
     };
 
+    const handleClearHistory = () => {
+        setMessages([]);
+    };
+
+    const handleExportHistory = () => {
+        const data = JSON.stringify(messages, null, 2);
+        const blob = new Blob([data], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `pangaea_session_${sessionId.substring(0, 8)}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+    };
+
     return (
         <div className="flex flex-col h-full bg-transparent max-w-5xl mx-auto w-full relative z-10 border-x border-white/5 shadow-2xl">
+            {/* Header bar with actions */}
+            {messages.length > 0 && (
+                <div className="flex items-center justify-between px-6 py-3 border-b border-white/5 bg-slate-900/40 backdrop-blur-md shrink-0">
+                    <span className="text-sm text-slate-400 font-medium">
+                        {messages.length} message{messages.length !== 1 ? 's' : ''}
+                    </span>
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={handleExportHistory}
+                            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-teal-400 px-3 py-1.5 rounded-lg border border-white/10 hover:border-teal-500/30 transition-all"
+                        >
+                            <Download size={14} /> Export
+                        </button>
+                        <button
+                            onClick={handleClearHistory}
+                            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-red-400 px-3 py-1.5 rounded-lg border border-white/10 hover:border-red-500/30 transition-all"
+                        >
+                            <Trash2 size={14} /> Clear
+                        </button>
+                    </div>
+                </div>
+            )}
+
             <div className="flex-1 overflow-y-auto p-6 space-y-6 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent" ref={scrollRef}>
                 {messages.length === 0 && !activeStatus && (
                     <div className="h-full flex flex-col items-center justify-center text-slate-500 opacity-70">
@@ -120,7 +153,7 @@ export function DataAgent({ sessionId }: { sessionId: string }) {
                             {m.plots && m.plots.length > 0 && (
                                 <div className="mt-6 grid grid-cols-1 gap-6 bg-slate-950/50 p-6 rounded-2xl border border-white/5 shadow-inner">
                                     {m.plots.map((url, i) => (
-                                        <img key={i} src={`http://localhost:8000${url}`} alt="Agent Plot" className="rounded-xl border border-white/10 mx-auto shadow-2xl max-h-[500px] object-contain bg-slate-900" />
+                                        <img key={i} src={`http://127.0.0.1:8000${url}`} alt="Agent Plot" className="rounded-xl border border-white/10 mx-auto shadow-2xl max-h-[500px] object-contain bg-slate-900" />
                                     ))}
                                 </div>
                             )}

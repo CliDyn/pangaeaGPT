@@ -224,6 +224,37 @@ CUSTOM_UI = """
         color: var(--white);
         box-shadow: 0 2px 5px rgba(0,0,0,0.2);
     }
+
+    /* THUMBNAIL GRID STYLES - Clickable image cards */
+    [data-testid="stImage"] {
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        padding: 4px;
+        background-color: white;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    [data-testid="stImage"]:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+        border-color: var(--primary-teal);
+        cursor: zoom-in;
+    }
+
+    [data-testid="stImage"] img {
+        border-radius: 4px;
+    }
+
+    /* Image caption styling */
+    [data-testid="stImage"] [data-testid="stMarkdownContainer"] p {
+        font-size: 0.75rem;
+        color: #666;
+        text-align: center;
+        margin-top: 4px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
 </style>
 """
 

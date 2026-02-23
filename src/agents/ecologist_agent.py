@@ -1,7 +1,6 @@
 # src/agents/ecologist_agent.py (Refactored)
 import logging
-import streamlit as st
-# Removed redundant imports (os, pandas, xarray, langchain_openai, langchain_core.prompts, langchain.agents)
+# Removed redundant imports
 
 # Import the new helper functions from base.py
 from .base import prepare_visualization_environment, create_standard_agent_executor
@@ -16,12 +15,12 @@ from ..tools.visualization_tools import (
     wise_agent_tool
 )
 
-def create_ecologist_agent(user_query, datasets_info):
+def create_ecologist_agent(user_query, datasets_info, session_id="default"):
     """
     Creates the Ecologist agent specialized in biodiversity data visualization.
     """
     # Use the helper function to prepare the environment
-    datasets, datasets_text, dataset_variables = prepare_visualization_environment(datasets_info)
+    datasets, datasets_text, dataset_variables = prepare_visualization_environment(datasets_info, session_id=session_id)
 
     # Generate the specific prompt for this agent
     prompt = Prompts.generate_ecologist_agent_system_prompt(user_query, datasets_text, dataset_variables)
@@ -33,7 +32,7 @@ def create_ecologist_agent(user_query, datasets_info):
     repl_tool = CustomPythonREPLTool(
         datasets=datasets,
         results_dir=datasets.get("results_dir"),
-        session_key=st.session_state.get("thread_id", "default")
+        session_key=session_id
     )
 
     # Define the tools (Ecologist does NOT include ERA5/Copernicus)

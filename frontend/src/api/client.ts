@@ -1,7 +1,7 @@
 import axios from 'axios';
 
-const API_BASE_URL = 'http://localhost:8000/api';
-const WS_BASE_URL = 'ws://localhost:8000/api';
+const API_BASE_URL = 'http://127.0.0.1:8000/api';
+const WS_BASE_URL = 'ws://127.0.0.1:8000/api';
 
 // --- Types ---
 export interface Dataset {
@@ -65,7 +65,24 @@ export const apiClient = {
     getActiveDatasetsInfo: async (sessionId: string) => {
         const res = await axios.get(`${API_BASE_URL}/sessions/${sessionId}/datasets/info`);
         return res.data;
-    }
+    },
+
+    // Model Selection
+    getModels: async (): Promise<{ models: string[]; default: string }> => {
+        const res = await axios.get(`${API_BASE_URL}/models`);
+        return res.data;
+    },
+
+    setModel: async (sessionId: string, modelName: string) => {
+        const res = await axios.put(`${API_BASE_URL}/sessions/${sessionId}/model`, { model_name: modelName });
+        return res.data;
+    },
+
+    // Dataset Preview
+    previewDataset: async (sessionId: string, doi: string) => {
+        const res = await axios.get(`${API_BASE_URL}/sessions/${sessionId}/datasets/preview`, { params: { doi } });
+        return res.data;
+    },
 };
 
 // --- WebSocket Service ---

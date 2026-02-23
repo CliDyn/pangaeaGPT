@@ -17,7 +17,7 @@ class Prompts:
             "Please identify the top two datasets that best match the user's query and explain why they are the most relevant. "
             "Do not suggest datasets without values in the Parameters field.\n"
             "Respond with the following schema:\n"
-            "{dataset name}\n{reason why relevant}\n{propose some short analysis and further questions to answer}"
+            "{{dataset name}}\n{reason why relevant}\n{propose some short analysis and further questions to answer}"
         )
         return prompt
 

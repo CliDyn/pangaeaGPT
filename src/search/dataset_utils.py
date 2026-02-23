@@ -2,7 +2,7 @@ import os
 import shutil
 import pandas as pd
 import logging
-import streamlit as st
+# Note: streamlit import removed — caching is handled by the caller (session_data)
 import pangaeapy.pandataset as pdataset
 import xarray as xr
 import requests
@@ -14,13 +14,38 @@ from bs4 import BeautifulSoup
 from tqdm.auto import tqdm
 
 from ..utils.workspace import WorkspaceManager
+from .fast_pangaea_client import fetch_metadata_fast, format_parameters
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Function to fetch dataset details using pangaeapy
+
 def fetch_dataset_details(doi):
+    """
+    Fetch dataset details (abstract and parameters) for a PANGAEA DOI.
+    Uses FAST OAI-PMH client first, falls back to pangaeapy if needed.
+
+    Args:
+        doi: PANGAEA DOI in any format
+
+    Returns:
+        tuple: (abstract, parameters_string)
+    """
+    # --- FAST PATH: OAI-PMH Client (10x faster than pangaeapy) ---
     try:
+        metadata = fetch_metadata_fast(doi)
+        if metadata:
+            abstract = metadata.get('abstract') or "No description available"
+            params = metadata.get('parameters', [])
+            parameters = format_parameters(params, max_count=10)
+            logging.debug(f"FAST: Got metadata for {doi}")
+            return abstract, parameters
+    except Exception as e:
+        logging.debug(f"Fast client failed for {doi}: {e}")
+
+    # --- FALLBACK: pangaeapy (slower but more reliable for edge cases) ---
+    try:
+        logging.debug(f"Falling back to pangaeapy for {doi}")
         dataset = pdataset.PanDataSet(id=doi)
         dataset.setMetadata()
         abstract = getattr(dataset, 'abstract', "No description available") or "No description available"
@@ -204,11 +229,8 @@ def fetch_dataset(doi, target_dir=None):
         os.makedirs(target_dir, exist_ok=True)
     # -----------------------------
 
-    # Check cache
-    if doi in st.session_state.datasets_cache:
-        dataset, name = st.session_state.datasets_cache[doi]
-        logging.info(f"Returning cached dataset for DOI {doi}, path: {dataset}")
-        return dataset, name
+    # Note: caching is handled by the caller (main.py load_selected_datasets_into_cache)
+    # so we skip the st.session_state cache check here.
 
     # Parse DOI to get dataset ID
     doi_match = re.search(r'PANGAEA\.(\d+)', doi)
@@ -225,7 +247,7 @@ def fetch_dataset(doi, target_dir=None):
                 csv_path = os.path.join(target_dir, "data.csv")
                 base_data.to_csv(csv_path, index=False)
                 logging.info(f"Saved DataFrame to {csv_path}")
-                st.session_state.datasets_cache[doi] = (target_dir, dataset_name)
+                # Cache is managed by caller
                 return target_dir, dataset_name
             else:
                 logging.info(f"No DataFrame via pangaeapy for DOI {doi}, proceeding to download files")
@@ -248,14 +270,14 @@ def fetch_dataset(doi, target_dir=None):
         success, result_path = download_pangaea_dataset(doi_url, target_dir)
         if success:
             logging.info(f"Successfully downloaded dataset to: {result_path}")
-            st.session_state.datasets_cache[doi] = (target_dir, dataset_name)
+            # Cache is managed by caller
             return target_dir, dataset_name
         else:
             logging.warning(f"Download failed: {result_path}")
-            st.session_state.datasets_cache[doi] = (None, f"Failed: {result_path}")
+            # Cache is managed by caller
             return None, f"Failed: {result_path}"
 
     except Exception as e:
         logging.error(f"Error in fetch_dataset for DOI {doi}: {str(e)}")
-        st.session_state.datasets_cache[doi] = (None, f"Failed: {str(e)}")
+        # Cache is managed by caller
         return None, f"Failed: {str(e)}"

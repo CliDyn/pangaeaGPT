@@ -70,15 +70,15 @@ def list_plotting_data_files(dummy_arg: str = "") -> str:
     Lists ALL files recursively from two sources:
     1. The data/plotting_data directory (static resources)
     2. All files in the current UUID sandbox directories (active datasets)
-    
-    Returns a flat list of all available file paths using relative paths.
+
+    Returns a flat list of all available file paths with base path info for construction.
     """
     import os
     import streamlit as st
-    
+
     all_files = []
     cwd = os.getcwd()
-    
+
     # Part 1: List files from data/plotting_data
     plotting_data_dir = os.path.join("data", "plotting_data")
     if os.path.exists(plotting_data_dir):
@@ -87,10 +87,12 @@ def list_plotting_data_files(dummy_arg: str = "") -> str:
                 full_path = os.path.join(root, filename)
                 # Keep this as a relative path
                 all_files.append(f"STATIC: {full_path}")
-    
+
     # Part 2: Session files via Manager
     sandbox_dir = WorkspaceManager.get_sandbox_path()
+    clean_sandbox = sandbox_dir.replace(os.sep, '/')
 
+    sandbox_files = []
     if os.path.exists(sandbox_dir):
         for root, dirs, files in os.walk(sandbox_dir):
             # SMART ZARR HANDLING logic
@@ -98,7 +100,7 @@ def list_plotting_data_files(dummy_arg: str = "") -> str:
             for z_dir in zarr_dirs:
                 full = os.path.join(root, z_dir)
                 rel = os.path.relpath(full, sandbox_dir).replace('\\', '/')
-                all_files.append(f"📦 {rel} (Zarr)")
+                sandbox_files.append(f"📦 {rel} (Zarr)")
                 dirs.remove(z_dir)
 
             for filename in files:
@@ -107,15 +109,34 @@ def list_plotting_data_files(dummy_arg: str = "") -> str:
                 rel_path = os.path.relpath(full_path, sandbox_dir).replace('\\', '/')
 
                 if "era5_data" in rel_path:
-                    all_files.append(f"ERA5: {rel_path}")
+                    sandbox_files.append(f"ERA5: {rel_path}")
                 elif "copernicus_data" in rel_path:
-                    all_files.append(f"COPERNICUS: {rel_path}")
+                    sandbox_files.append(f"COPERNICUS: {rel_path}")
                 else:
-                    all_files.append(f"DATA: {rel_path}")
-    
-    # Return a simple list of all available files
+                    sandbox_files.append(f"DATA: {rel_path}")
+
+    # Build output with CRITICAL path info
+    output_lines = []
+
+    # CRITICAL: Tell agent how to access files
+    output_lines.append("=" * 60)
+    output_lines.append("⚠️ HOW TO READ FILES:")
+    output_lines.append(f"   SANDBOX BASE: uuid_main_dir = r'{clean_sandbox}'")
+    output_lines.append("   USE: pd.read_csv(os.path.join(uuid_main_dir, 'FOLDER/data.csv'))")
+    output_lines.append("=" * 60)
+    output_lines.append("")
+
+    if sandbox_files:
+        output_lines.append(f"SANDBOX FILES ({len(sandbox_files)} files):")
+        output_lines.extend(sandbox_files)
+        output_lines.append("")
+
     if all_files:
-        return "Available files:\n" + "\n".join(all_files)
+        output_lines.append(f"STATIC FILES ({len(all_files)} files):")
+        output_lines.extend(all_files)
+
+    if sandbox_files or all_files:
+        return "\n".join(output_lines)
     else:
         return "No files found in plotting_data or active datasets."
 

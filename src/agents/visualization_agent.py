@@ -1,7 +1,6 @@
 # src/agents/visualization_agent.py (Refactored)
 import logging
-import streamlit as st
-# Removed redundant imports (os, pandas, xarray, langchain_core.prompts, langchain.agents)
+# Removed redundant imports
 
 # Import the new helper functions from base.py
 from .base import prepare_visualization_environment, create_standard_agent_executor
@@ -15,12 +14,12 @@ from ..tools.visualization_tools import (
     wise_agent_tool
 )
 
-def create_visualization_agent(user_query, datasets_info):
+def create_visualization_agent(user_query, datasets_info, session_id="default"):
     """
     Creates a general visualization agent.
     """
     # Use the helper function to prepare the environment
-    datasets, datasets_text, dataset_variables = prepare_visualization_environment(datasets_info)
+    datasets, datasets_text, dataset_variables = prepare_visualization_environment(datasets_info, session_id=session_id)
 
     # Generate the specific prompt for this agent
     prompt = Prompts.generate_visualization_agent_system_prompt(user_query, datasets_text, dataset_variables)
@@ -32,7 +31,7 @@ def create_visualization_agent(user_query, datasets_info):
     repl_tool = CustomPythonREPLTool(
         datasets=datasets,
         results_dir=datasets.get("results_dir"),
-        session_key=st.session_state.get("thread_id", "default")
+        session_key=session_id
     )
 
     # Define the tools
@@ -48,7 +47,7 @@ def create_visualization_agent(user_query, datasets_info):
     return create_standard_agent_executor(llm, tools, prompt)
 
 # Centralized initialize_agents function (remains here as __init__.py depends on it)
-def initialize_agents(user_query, datasets_info):
+def initialize_agents(user_query, datasets_info, session_id="default"):
     """
     Initializes all 4 specialized agents.
     """
@@ -58,14 +57,13 @@ def initialize_agents(user_query, datasets_info):
         from .ecologist_agent import create_ecologist_agent
         from .pandas_agent import create_pandas_agent
 
-        oceanographer_agent = create_oceanographer_agent(user_query, datasets_info)
-        ecologist_agent = create_ecologist_agent(user_query, datasets_info)
-        visualization_agent = create_visualization_agent(user_query, datasets_info)
-        dataframe_agent = create_pandas_agent(user_query, datasets_info)
+        oceanographer_agent = create_oceanographer_agent(user_query, datasets_info, session_id=session_id)
+        ecologist_agent = create_ecologist_agent(user_query, datasets_info, session_id=session_id)
+        visualization_agent = create_visualization_agent(user_query, datasets_info, session_id=session_id)
+        dataframe_agent = create_pandas_agent(user_query, datasets_info, session_id=session_id)
 
         logging.info("All 4 agents initialized successfully")
         return oceanographer_agent, ecologist_agent, visualization_agent, dataframe_agent
     else:
-        st.warning("No datasets loaded. Please load datasets first.")
         logging.warning("No datasets provided to initialize_agents")
         return None, None, None, None

@@ -1,24 +1,25 @@
 # src/agents/search_agent.py
 import logging
-import streamlit as st
 import pandas as pd
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import StructuredTool
-from langchain_classic.agents import AgentExecutor
-from langchain_classic.agents import create_openai_tools_agent
+from langchain.agents import AgentExecutor
+from langchain.agents import create_openai_tools_agent
 from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.runnables import RunnableConfig
 
 from ..search.search_pg_default import pg_search_default, direct_access_doi
 from ..search.publication_qa_tool import answer_publication_questions, PublicationQAArgs
 from ..tools.parallel_search_tool import parallel_search_pangaea, ParallelSearchArgs
 from ..llm_factory import get_llm
+from ..utils.session_manager import SessionManager
 
 # Define the arguments schema for the search tool
 class SearchPangaeaArgs(BaseModel):
     query: str = Field(description="The search query string.")
-    count: Optional[int] = Field(default=20, description="Results to return. Default 20 (fast). Max 50.")
+    count: Optional[int] = Field(default=30, description="Results to return. Default 30 (for benchmark comparability). Max 50.")
     mindate: Optional[str] = Field(default=None, description="The minimum date in 'YYYY-MM-DD' format.")
     maxdate: Optional[str] = Field(default=None, description="The maximum date in 'YYYY-MM-DD' format.")
     minlat: Optional[float] = Field(default=None, description="The minimum latitude in decimal degrees.")
@@ -34,7 +35,7 @@ class ConsolidateResultsArgs(BaseModel):
     selection_criteria: str = Field(description="Not used - kept for compatibility")
     max_results: int = Field(default=30, description="Maximum number of results to return")
 
-def consolidate_search_results(all_results_json: str, selection_criteria: str, max_results: int = 15):
+def consolidate_search_results(all_results_json: str, selection_criteria: str, max_results: int = 15, config: RunnableConfig = None):
     """
     FINAL STEP: Adds collected DOIs to the workspace using the accumulative loader.
     Uses Shopping Cart strategy - datasets are ADDED to existing workspace.
@@ -67,10 +68,12 @@ def consolidate_search_results(all_results_json: str, selection_criteria: str, m
 
         # Call backend accumulator - THIS IS THE KEY
         # direct_access_doi now ADDS to the session state (Shopping Cart)
-        datasets_info, msg = direct_access_doi(', '.join(valid_dois))
+        session_data = SessionManager.get_session(session_id)
+        
+        datasets_info, msg = direct_access_doi(', '.join(valid_dois), session_data=session_data)
 
         # Get total count from session
-        total_count = len(st.session_state.datasets_info) if hasattr(st.session_state, 'datasets_info') and st.session_state.datasets_info is not None else len(valid_dois)
+        total_count = len(session_data.get('datasets_info', [])) if session_data.get('datasets_info') is not None else len(valid_dois)
 
         return f"Success! Added {len(valid_dois)} datasets to Workspace. Total active: {total_count}."
 
@@ -93,9 +96,9 @@ consolidate_tool = StructuredTool.from_function(
 # === SMART FILTER TOOL ===
 class FilterWorkspaceArgs(BaseModel):
     user_query: str = Field(description="The original user query/request to filter datasets against")
-    max_keep: int = Field(default=15, description="Maximum number of datasets to keep after filtering")
+    max_keep: int = Field(default=30, description="Maximum number of datasets to keep after filtering (default 30 for benchmark comparability)")
 
-def filter_workspace_datasets(user_query: str, max_keep: int = 15):
+def filter_workspace_datasets(user_query: str, max_keep: int = 30, config: RunnableConfig = None):
     """
     FINAL FILTER: Analyzes ALL accumulated datasets and keeps only the most relevant ones.
     Uses LLM to intelligently score datasets based on Name, Parameters, and Description.
@@ -109,11 +112,14 @@ def filter_workspace_datasets(user_query: str, max_keep: int = 15):
     """
     import pandas as pd
 
+    session_id = config.get("configurable", {}).get("session_id", "default") if config else "default"
+    session_data = SessionManager.get_session(session_id)
+
     # Check if we have datasets
-    if "datasets_info" not in st.session_state or st.session_state.datasets_info is None:
+    if "datasets_info" not in session_data or session_data["datasets_info"] is None:
         return "No datasets in workspace to filter."
 
-    df = st.session_state.datasets_info
+    df = session_data["datasets_info"]
     if df.empty:
         return "Workspace is empty."
 
@@ -148,10 +154,10 @@ USER REQUEST: "{user_query}"
 DATASETS IN WORKSPACE:
 {datasets_text}
 
-TASK: Select the {max_keep} MOST RELEVANT datasets for the user's request.
+TASK: Select up to {max_keep} MOST RELEVANT datasets for the user's request.
 Consider: dataset name, parameters, and description.
 
-**CONSTRAINT: Try to select NO MORE THAN 10 datasets for the final subset. Exceed this limit ONLY in exceptional cases where more are truly necessary.**
+**TARGET: Select the best matching datasets (up to {max_keep}). More results = better for comprehensive analysis.**
 
 RESPOND WITH ONLY a JSON array of the dataset indices (the numbers in brackets) to KEEP, **ORDERED BY RELEVANCE (most relevant first)**.
 Example: [0, 3, 5, 7, 12]
@@ -195,17 +201,16 @@ JSON array of indices to keep (sorted by relevance):"""
             logging.warning("LLM returned no valid indices, keeping first N datasets")
             valid_indices = list(range(min(max_keep, len(df))))
 
-        # Filter the dataframe
-        filtered_df = df.iloc[valid_indices].reset_index(drop=True)
         filtered_df['Number'] = filtered_df.index + 1
 
         # Update session state
-        st.session_state.datasets_info = filtered_df
+        SessionManager.update_session(session_id, "datasets_info", filtered_df)
+        session_data = SessionManager.get_session(session_id)
 
         removed_count = total_before - len(filtered_df)
 
         # Update UI message
-        st.session_state.messages_search.append({
+        session_data.setdefault("messages_search", []).append({
             "role": "assistant",
             "content": f"**Filtered & Sorted:** Kept {len(filtered_df)} most relevant datasets (removed {removed_count}).",
             "table": filtered_df.to_json(orient="split")
@@ -220,17 +225,17 @@ JSON array of indices to keep (sorted by relevance):"""
         # Fallback: just keep first N
         filtered_df = df.head(max_keep).reset_index(drop=True)
         filtered_df['Number'] = filtered_df.index + 1
-        st.session_state.datasets_info = filtered_df
+        SessionManager.update_session(session_id, "datasets_info", filtered_df)
         return f"Fallback filter: Kept first {max_keep} datasets (error in smart filtering: {e})"
 
 filter_workspace_tool = StructuredTool.from_function(
     func=filter_workspace_datasets,
     name="filter_workspace",
-    description="MANDATORY FINISHING TOOL: ALWAYS use this at the end of your search workflow to AUTO-SELECT, SORT, and CLEANUP the workspace. It is required to finalize the dataset list. Removes zip files, ranks by relevance, and limits count.",
+    description="Final cleanup: auto-selects best datasets, removes ZIPs, ranks by relevance. ALWAYS call this after your 1-3 initial searches to finalize the workspace.",
     args_schema=FilterWorkspaceArgs
 )
 
-def create_search_agent(datasets_info=None, search_mode="simple"):
+def create_search_agent(datasets_info=None, search_mode="simple", session_id="default"):
     """
     Creates a search agent that can operate in simple or deep (multi-search) mode.
     
@@ -243,104 +248,98 @@ def create_search_agent(datasets_info=None, search_mode="simple"):
 
     # Adjust system prompt based on mode
     if search_mode == "simple":
-        system_prompt = """You are a FAST and EFFICIENT dataset search assistant for PANGAEA.
+        system_prompt = """You are a SMART and EFFICIENT dataset search assistant for PANGAEA.
 
-**EFFICIENCY RULES (CRITICAL!):**
-- Use `count=20` for searches (good balance of speed and coverage)
-- **Strategy**: Try to perform **at least 2 searches** to ensure coverage, then estimate if more are needed.
-- **Limit**: **MAXIMUM 4 searches**. Usually 2 is sufficient.
-- **Anti-Greed**: Do not be too greedy. Don't try to find every single existing file. Stop when you have a good representative set.
-- **Format Preference**: 🚨 **STRICT RULE: NO ZIP FILES.** Do not select datasets that are just ZIP archives unless it is the ONLY source of data for a critical request. Always prefer processed/tabular data or NetCDF (.nc).
+**YOUR MISSION:** Find the most relevant datasets for the user using 1 to 3 targeted searches, then filter the results.
 
-**SHOPPING CART:**
-- Each search ADDS to workspace (accumulates)
-- If user needs 2 data types → 2 searches max
-- Simple requests → 1-2 searches are enough!
+**WORKFLOW - FOLLOW EXACTLY:**
+1. Execute 1 to 3 broad, well-crafted searches using `search_pg_datasets`.
+   - Use `count=30`.
+   - Try to capture the core topic and region.
+2. (Optional) If you need more datasets or a slightly different cut, do 1 or 2 more searches (maximum 5 searches total).
+3. ✅ ONCE YOU HAVE ENOUGH DATASETS (typically after 1-3 searches), CALL: `filter_workspace(user_query="...", max_keep=30)` to automatically select and rank the best ones.
+4. ✅ STOP - provide a brief text summary of what you found.
 
-**SMART QUERIES:**
-- Use Boolean: `AND`, `OR`, `NOT`, `()`
-- Add synonyms: `(temperature OR CTD)`, `(SST OR "sea surface temperature")`
-- Be specific: `"MOSAiC" AND track` not just `MOSAiC`
+**BOOLEAN QUERY RULES:**
+- ALWAYS use `count=30`
+- AND combines terms: `topic AND region`
+- OR expands options: `(term1 OR term2)`
+- Quotes for exact phrasing: `"Fram Strait"`
 
-**SPATIAL/TEMPORAL:**
-- Region mentioned → estimate bbox with +-2° buffer
-- Timeframe mentioned → convert to YYYY-MM-DD with +-1 year buffer
-
-**WORKFLOW:**
-1. Analyze request → start with ~2 diverse searches (e.g. synonyms or different aspects).
-2. Execute searches.
-3. **Decide on the way**: Check results. Need more? (Max 4 total).
-4. **MANDATORY FINAL STEP**: You **MUST** use `filter_workspace` to AUTO-SELECT and SORT the best datasets. **DO NOT SKIP THIS.**
-   - Even if you have few results, this sorts them by relevance.
-   - **NEVER** finish without running this tool if you found data.
-5. **TERMINATE IMMEDIATELY**: After running `filter_workspace`, STOP. Do NOT run `answer_publication_questions` or any other tool. Do NOT "summarize" with another tool call. Just provide your final text response.
-
-**TERMINATION CONDITION:**
-- IF you have run `filter_workspace` -> STOP.
-- IF you have executed 4 searches -> STOP and run `filter_workspace`.
-- DO NOT loop. DO NOT try to be "helpful" by running extra tools at the end.
-
-**EXAMPLES:**
-- "Find Arctic temperature data" → 1 search: `(temperature OR CTD) AND Arctic`, count=20
-- "MOSAiC track and wind" → 2 searches: `MOSAiC track`, then `MOSAiC wind`
-- "Zooplankton Fram Strait" → 1 search: `zooplankton AND "Fram Strait"`, count=20
-
-**DOI provided?** → Use `direct_access_doi` directly, skip search.
-
-**Too many results?** → `filter_workspace` keeps only the best.
+**TERMINATION RULES:**
+- ❌ DO NOT run more than 5 searches. It is a waste of time and API quota. 
+- ✅ ALWAYS Call `filter_workspace` to finalize the list after searching.
+- ✅ After `filter_workspace`, give a brief text summary and STOP.
 """
     else:
-        # DEEP MODE: EFFICIENT PARALLEL SEARCH
-        system_prompt = """You are an EFFICIENT Research Data Scout for PANGAEA.
+        # DEEP MODE: COMPREHENSIVE PARALLEL SEARCH
+        system_prompt = """You are a COMPREHENSIVE Research Data Scout for PANGAEA.
+Your goal is to find THE BEST datasets through EXHAUSTIVE parallel searching.
 
-**EFFICIENCY RULES (CRITICAL!):**
-- Use `count_per_query=20` for parallel searches
-- **MAX 2-3 query variations** in parallel_search_pangaea - quality over quantity!
-- Don't overthink - execute quickly
-- One well-crafted parallel search beats multiple sequential ones
+🔥 **CRITICAL: MULTIPLE ROUNDS OF PARALLEL SEARCHES** 🔥
+Execute 3-4 ROUNDS of parallel searches (5 queries each) = 15-20 total searches!
 
-**PARALLEL SEARCH STRATEGY:**
-Use `parallel_search_pangaea` with 2-3 smart query variations:
-- Example: `["MOSAiC track position", "MOSAiC drift trajectory", "PS122 navigation"]`
-- Each query tests a different angle/synonym
-- count_per_query=20 for each
+**SEARCH STRATEGY - MULTIPLE ROUNDS:**
 
-**SMART QUERIES:**
-- Boolean: `AND`, `OR`, `NOT`, `()`
-- Synonyms: `(temperature OR CTD)`, `(track OR trajectory OR position)`
-- Instruments: temperature→CTD, currents→ADCP, sediments→core
-
-**SPATIAL/TEMPORAL:**
-- Region → bbox with +-2° buffer, remove region name from query
-- Timeframe → YYYY-MM-DD with +-1 year buffer
-
-**WORKFLOW:**
-1. Analyze request → plan 2-3 query variations
-2. `parallel_search_pangaea` with queries, count_per_query=20
-3. Review results → `consolidate_search_results` with best DOIs
-4. **MANDATORY FINAL STEP**: You **MUST** use `filter_workspace` to SORT and rank the consolidated list. **DO NOT STOP** until this tool has run.
-5. **TERMINATE IMMEDIATELY**: After running `filter_workspace`, STOP. Do NOT run `answer_publication_questions` or any other tool. Do NOT "summarize" with another tool call. Just provide your final text response.
-
-**TERMINATION CONDITION:**
-- IF you have run `filter_workspace` -> STOP.
-- DO NOT loop. DO NOT try to be "helpful" by running extra tools at the end.
-
-**EXAMPLE - "MOSAiC drift analysis":**
+📋 **ROUND 1: Core Topic (5 queries)**
 ```
 parallel_search_pangaea(
-  search_queries=["MOSAiC track position", "MOSAiC drift ice", "PS122 navigation"],
-  count_per_query=20
+  search_queries=[
+    "main_term AND region",
+    "(synonym1 OR synonym2) AND region",
+    "scientific_name AND region",
+    "instrument AND parameter AND region",
+    "method AND topic AND region"
+  ],
+  count_per_query=30
 )
-→ consolidate_search_results with best DOIs
-→ filter_workspace if needed
 ```
 
-**DOI provided?** → `direct_access_doi` directly.
+📋 **ROUND 2: Expanded Coverage (5 queries)**
+```
+parallel_search_pangaea(
+  search_queries=[
+    "related_parameter AND region",
+    "nearby_region AND topic",
+    "expedition_name AND parameter",
+    "(data_type OR measurement) AND topic",
+    "institution AND region AND parameter"
+  ],
+  count_per_query=30
+)
+```
 
-**AVOID:**
-- More than 3-4 parallel queries (diminishing returns)
-- Redundant queries (`zooplankton`, `zooplanktons`)
-- Too broad (`ocean data`) or too narrow
+📋 **ROUND 3: Deep Dive (5 queries)**
+```
+parallel_search_pangaea(
+  search_queries=[
+    "specific_depth AND parameter",
+    "platform_type AND region",
+    "time_series AND topic",
+    "cruise_id AND parameter",
+    "processed_data AND topic AND region"
+  ],
+  count_per_query=30
+)
+```
+
+**AFTER EACH ROUND:**
+- Review `all_datasets` metadata
+- Select relevant DOIs for consolidation
+- Run `consolidate_search_results` with curated DOI list
+
+**WORKFLOW:**
+1. Execute ROUND 1 parallel search → consolidate best DOIs
+2. Execute ROUND 2 parallel search → consolidate best DOIs
+3. Execute ROUND 3 parallel search → consolidate best DOIs
+4. **MANDATORY**: Run `filter_workspace(user_query="...", max_keep=30)`
+5. STOP and provide summary
+
+**BOOLEAN QUERY RULES:**
+- ALWAYS use `count_per_query=30`
+- Use AND/OR/NOT and parentheses
+- Use quotes for exact phrases
+- Be creative with synonyms!
 
 **🚨 CRITICAL: CONSOLIDATION ONLY ACCEPTS DOI STRINGS! 🚨**
 
@@ -389,10 +388,10 @@ The parallel_search_pangaea tool returns:
 7. IMPORTANT: After work complete, write ONLY a brief 3-4 sentence summary. DO NOT list DOIs - creates double display!
 
 **SMART FILTERING (USE WHEN WORKSPACE HAS MANY DATASETS):**
-- Call `filter_workspace(user_query="original request", max_keep=15)` at the END
+- Call `filter_workspace(user_query="original request", max_keep=30)` at the END
 - The filter uses AI to analyze Name, Parameters, Description
 - Keeps most relevant, removes duplicates and irrelevant results
-- ALWAYS use if you accumulated >20 datasets!
+- ALWAYS use to finalize results!
 
 **CORRECT FORMAT FOR CONSOLIDATION:**
 ```json
@@ -408,56 +407,63 @@ The parallel_search_pangaea tool returns:
     ])
 
     # Enhanced search function that works with multi-search
-    def search_pg_datasets_tool_enhanced(query: str, count: Optional[int] = 30, 
+    def search_pg_datasets_tool_enhanced(query: str, count: int = 30, 
                                         mindate: Optional[str] = None, maxdate: Optional[str] = None,
                                         minlat: Optional[float] = None, maxlat: Optional[float] = None,
-                                        minlon: Optional[float] = None, maxlon: Optional[float] = None):
+                                        minlon: Optional[float] = None, maxlon: Optional[float] = None,
+                                        config: RunnableConfig = None):
         """Enhanced search tool that returns structured results for consolidation"""
         
         # Log search attempt
         logging.info(f"Executing search: query='{query}', count={count}, spatial=[{minlat},{maxlat},{minlon},{maxlon}], temporal=[{mindate},{maxdate}]")
         
+        # Use session_id from outer scope explicitly
+        session_data = SessionManager.get_session(session_id)
+
         # Call original search function with count parameter
         datasets_info = pg_search_default(query, count=count, mindate=mindate, maxdate=maxdate,
                                         minlat=minlat, maxlat=maxlat, minlon=minlon, maxlon=maxlon)
         
         # Store the FULL datasets in session state with a unique key
         search_id = f"search_{query}_{count}_{mindate}_{maxdate}_{minlat}_{maxlat}_{minlon}_{maxlon}".replace(" ", "_")
-        if "search_results_cache" not in st.session_state:
-            st.session_state.search_results_cache = {}
-        st.session_state.search_results_cache[search_id] = datasets_info
+        if "search_results_cache" not in session_data:
+            session_data["search_results_cache"] = {}
+        session_data["search_results_cache"][search_id] = datasets_info
         
         # For simple mode, use Shopping Cart accumulation logic
-        if st.session_state.get("search_mode") == "simple" and not datasets_info.empty:
-            # --- SHOPPING CART: Accumulate instead of replace ---
-            existing_dois = set()
-            if "datasets_info" in st.session_state and isinstance(st.session_state.datasets_info, pd.DataFrame):
-                if not st.session_state.datasets_info.empty:
-                    existing_dois = set(st.session_state.datasets_info['DOI'].tolist())
+        # --- WORKSPACE ACCUMULATION (Shopping Cart) ---
+        # Get existing DOIs to avoid duplicates
+        existing_dois = []
+        if "datasets_info" in session_data and session_data["datasets_info"] is not None:
+            if isinstance(session_data["datasets_info"], pd.DataFrame) and not session_data["datasets_info"].empty:
+                existing_dois = session_data["datasets_info"]['DOI'].tolist()
 
+        if not datasets_info.empty:
             # Filter out duplicates from new results
             new_datasets = datasets_info[~datasets_info['DOI'].isin(existing_dois)]
             num_new = len(new_datasets)
 
             if existing_dois and num_new > 0:
                 # Merge with existing
-                combined = pd.concat([st.session_state.datasets_info, new_datasets], ignore_index=True)
+                combined = pd.concat([session_data["datasets_info"], new_datasets], ignore_index=True)
                 combined['Number'] = combined.index + 1
-                st.session_state.datasets_info = combined
+                SessionManager.update_session(session_id, "datasets_info", combined)
+                session_data = SessionManager.get_session(session_id)
                 msg = f"**Search completed:** Added {num_new} new datasets. Total in workspace: {len(combined)}."
             elif existing_dois and num_new == 0:
                 msg = f"**Search completed:** Found {len(datasets_info)} datasets (all already in workspace)."
             else:
                 datasets_info['Number'] = datasets_info.index + 1
-                st.session_state.datasets_info = datasets_info
+                SessionManager.update_session(session_id, "datasets_info", datasets_info)
+                session_data = SessionManager.get_session(session_id)
                 msg = f"**Search completed:** Found {len(datasets_info)} datasets."
 
-            st.session_state.messages_search.append({
+            session_data.setdefault("messages_search", []).append({
                 "role": "assistant",
                 "content": msg,
-                "table": st.session_state.datasets_info.to_json(orient="split")
+                "table": session_data["datasets_info"].to_json(orient="split")
             })
-            # ----------------------------------------------------
+        # ----------------------------------------------------
         
         # Create LIGHTWEIGHT result for consolidation (only DOIs and scores)
         lightweight_datasets = []
@@ -494,7 +500,7 @@ The parallel_search_pangaea tool returns:
     search_tool = StructuredTool.from_function(
         func=search_pg_datasets_tool_enhanced,
         name="search_pg_datasets",
-        description="Search PANGAEA datasets. Returns structured results for analysis. Set count based on query complexity (10-50).",
+        description="Search PANGAEA with Boolean queries. ALWAYS count=30. Keep to 1-3 well-crafted searches total, then use filter_workspace.",
         args_schema=SearchPangaeaArgs
     )
 
@@ -537,8 +543,7 @@ The parallel_search_pangaea tool returns:
     agent = create_openai_tools_agent(llm, tools, prompt)
 
     # Efficient iterations - don't waste time
-    # Simple: 8 iterations (1-3 searches + filter), Deep: 12 iterations
-    max_iterations = 8 if search_mode == "simple" else 12
+    max_iterations = 15 if search_mode == "simple" else 20
     
     # Create agent executor with increased iterations for multi-search
     agent_executor = AgentExecutor(

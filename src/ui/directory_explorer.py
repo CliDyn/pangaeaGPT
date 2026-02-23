@@ -296,13 +296,6 @@ def render_directory_explorer() -> None:
     # --- Directory Explorer Section ---
     st.markdown("---")  # Separator
 
-    # --- SHOPPING CART: Active Datasets List ---
-    st.subheader("Active Datasets (Workspace)")
-    st.caption("Datasets accumulate here across multiple searches - like a shopping cart")
-    render_active_datasets_list()
-
-    st.markdown("---")
-
     # Directory Explorer header
     st.subheader("File Explorer")
     st.caption("View the contents of the plotting data folder and current sandbox directory")

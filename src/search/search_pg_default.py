@@ -7,8 +7,10 @@ from typing import List, Optional
 from bs4 import BeautifulSoup
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import pangaeapy.pandataset as pdataset
 from .dataset_utils import fetch_dataset_details
+from .fast_pangaea_client import fetch_metadata_fast, format_parameters, format_feature_tags
 from ..utils.workspace import WorkspaceManager
 
 # Setup logging
@@ -62,7 +64,7 @@ def parse_res(html_content):
     }
 
 # Main search function
-def pg_search_default(query: str, count: int = 15, from_idx: int = 0, topic: Optional[str] = None,
+def pg_search_default(query: str, count: int = 30, from_idx: int = 0, topic: Optional[str] = None,
                       mindate: Optional[str] = None, maxdate: Optional[str] = None,
                       minlat: Optional[float] = None, maxlat: Optional[float] = None,
                       minlon: Optional[float] = None, maxlon: Optional[float] = None, **kwargs) -> pd.DataFrame:
@@ -95,6 +97,11 @@ def pg_search_default(query: str, count: int = 15, from_idx: int = 0, topic: Opt
 
     url = "https://www.pangaea.de/advanced/search.php"
     logging.debug("Sending request to PANGAEA with parameters: %s", params)
+    
+    # Rate limiting - PANGAEA struggles with rapid requests
+    import time
+    time.sleep(5)  # 5s delay between requests - be gentle with PANGAEA
+    
     response = requests.get(url, params=params, **kwargs)
     response.raise_for_status()
     logging.debug(f"URL: {response.url}")
@@ -111,27 +118,94 @@ def pg_search_default(query: str, count: int = 15, from_idx: int = 0, topic: Opt
     except Exception as e:
         logging.warning(f"Could not save transit.json: {e}")
 
-    parsed = []
+    # --- PHASE 1: Parse basic results (fast) ---
+    search_results = []
     for index, res in enumerate(results.get('results', [])):
         html_content = res.get('html', '')
         res['doi'] = f"https://doi.org/{res['URI'].replace('doi:', '')}"
         parsed_res = parse_res(html_content)
         res.update(parsed_res)
 
-        name = res.get('citation', 'No name available')
-        abstract, parameters = fetch_dataset_details(res['doi'])
+        search_results.append({
+            'index': index,
+            'doi': res['doi'],
+            'name': res.get('citation', 'No name available'),
+            'score': res.get('score', 0),
+            'file_urls': parsed_res['file_urls']
+        })
+
+    # --- PHASE 2: Fetch metadata in PARALLEL using ThreadPoolExecutor (fast!) ---
+    metadata_cache = {}
+    dois_to_fetch = [r['doi'] for r in search_results]
+
+    if dois_to_fetch:
+        logging.info(f"Fetching metadata for {len(dois_to_fetch)} datasets in parallel...")
+
+        def fetch_metadata_safe(doi):
+            """Wrapper to catch exceptions and return None on failure"""
+            try:
+                return doi, fetch_metadata_fast(doi)
+            except Exception as e:
+                logging.debug(f"Fast fetch failed for {doi}: {e}")
+                return doi, None
+
+        # Use ThreadPoolExecutor for parallel fetching (max 8 workers to avoid rate limits)
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = [executor.submit(fetch_metadata_safe, doi) for doi in dois_to_fetch]
+
+            for future in as_completed(futures):
+                try:
+                    doi, metadata = future.result()
+                    metadata_cache[doi] = metadata
+                except Exception as e:
+                    logging.debug(f"Error in parallel fetch: {e}")
+
+        logging.info(f"Parallel metadata fetch completed: {sum(1 for v in metadata_cache.values() if v)} successful")
+
+    # --- PHASE 3: Combine results with MACHINE-ACTIONABLE metadata ---
+    parsed = []
+    for res in search_results:
+        doi = res['doi']
+        metadata = metadata_cache.get(doi)
+
+        # Use fast metadata if available, otherwise fallback to sequential fetch
+        if metadata:
+            abstract = metadata.get('abstract') or "No description available"
+
+            # --- MACHINE INTELLIGENCE: Add feature tags to description ---
+            flags = metadata.get('feature_flags', {})
+            matrix_stats = metadata.get('matrix_stats', {})
+            feature_tags = format_feature_tags(flags, matrix_stats)
+
+            # Prepend tags to abstract for agent routing
+            if feature_tags:
+                abstract = f"{feature_tags} {abstract}"
+
+            # Use RICH parameters with stats if available
+            params_rich = metadata.get('parameters_rich', [])
+            if params_rich:
+                parameters = format_parameters(params_rich, max_count=12)
+            else:
+                # Fallback to simple parameters
+                params = metadata.get('parameters', [])
+                parameters = format_parameters(params, max_count=10)
+        else:
+            # Fallback to slower pangaeapy for missing metadata
+            logging.debug(f"Fallback to pangaeapy for {doi}")
+            abstract, parameters = fetch_dataset_details(doi)
+
         short_description = " ".join(abstract.split()[:100]) + "..." if len(abstract.split()) > 100 else abstract
 
         parsed.append({
-            'Number': index + 1,
-            'Name': name,
-            'DOI': res['doi'],
-            'DOI Number': res['doi'].split('/')[-1],
+            'Number': res['index'] + 1,
+            'Name': res['name'],
+            'DOI': doi,
+            'DOI Number': doi.split('/')[-1],
             'Description': abstract,
             'Short Description': short_description,
-            'Score': res.get('score', 0),
+            'Score': res['score'],
             'Parameters': parameters,
-            'file_urls': parsed_res['file_urls']
+            'file_urls': res['file_urls']
         })
 
     df = pd.DataFrame(parsed)
@@ -141,7 +215,7 @@ def pg_search_default(query: str, count: int = 15, from_idx: int = 0, topic: Opt
     return df
 
 
-def direct_access_doi(doi: str):
+def direct_access_doi(doi: str, session_data: dict = None):
     """
     Directly access datasets by DOI without using the search function.
     Uses "Shopping Cart" strategy - ACCUMULATES datasets instead of replacing them.
@@ -154,9 +228,11 @@ def direct_access_doi(doi: str):
     """
     import pandas as pd
     import logging
-    import streamlit as st
     import re
     import pangaeapy.pandataset as pdataset
+
+    if session_data is None:
+        session_data = {}
 
     # Parse input to get list of DOIs
     dois = [d.strip() for d in doi.split(',')]
@@ -166,10 +242,10 @@ def direct_access_doi(doi: str):
     existing_dois = set()
 
     # --- LOAD EXISTING DATASETS (Shopping Cart logic - keep previous results) ---
-    if "datasets_info" in st.session_state and isinstance(st.session_state.datasets_info, pd.DataFrame):
-        if not st.session_state.datasets_info.empty:
+    if "datasets_info" in session_data and isinstance(session_data["datasets_info"], pd.DataFrame):
+        if not session_data["datasets_info"].empty:
             # Get current DOIs to avoid duplicates
-            existing_dois = set(st.session_state.datasets_info['DOI'].tolist())
+            existing_dois = set(session_data["datasets_info"]['DOI'].tolist())
             logging.info(f"Shopping Cart: Found {len(existing_dois)} existing datasets in workspace")
     # ---------------------------------------------------------------
 
@@ -258,23 +334,24 @@ def direct_access_doi(doi: str):
 
     # --- Handle case where no new datasets and no existing datasets ---
     if not new_datasets_list and not existing_dois:
-        st.session_state.messages_search.append({
-            "role": "assistant",
-            "content": "No valid datasets found from the provided DOIs."
-        })
+        if "messages_search" in session_data:
+            session_data["messages_search"].append({
+                "role": "assistant",
+                "content": "No valid datasets found from the provided DOIs."
+            })
         # Return empty DataFrame (not None!) to avoid .empty / len() errors downstream
         return pd.DataFrame(), "No valid datasets found."
 
     # --- MERGE LOGIC (Shopping Cart accumulation) ---
     new_df = pd.DataFrame(new_datasets_list)
 
-    if "datasets_info" in st.session_state and isinstance(st.session_state.datasets_info, pd.DataFrame):
-        if not st.session_state.datasets_info.empty:
+    if "datasets_info" in session_data and isinstance(session_data["datasets_info"], pd.DataFrame):
+        if not session_data["datasets_info"].empty:
             # Add new datasets to existing ones
-            combined_df = pd.concat([st.session_state.datasets_info, new_df], ignore_index=True)
+            combined_df = pd.concat([session_data["datasets_info"], new_df], ignore_index=True)
             # Deduplicate by DOI (keep last occurrence in case of updates)
             datasets_info = combined_df.drop_duplicates(subset=['DOI'], keep='last').reset_index(drop=True)
-            logging.info(f"Shopping Cart: Merged {len(new_datasets_list)} new + {len(st.session_state.datasets_info)} existing = {len(datasets_info)} total")
+            logging.info(f"Shopping Cart: Merged {len(new_datasets_list)} new + {len(session_data['datasets_info'])} existing = {len(datasets_info)} total")
         else:
             datasets_info = new_df
     else:
@@ -284,17 +361,18 @@ def direct_access_doi(doi: str):
     datasets_info['Number'] = datasets_info.index + 1
 
     # Store in session state
-    st.session_state.datasets_info = datasets_info
+    session_data["datasets_info"] = datasets_info
 
     # --- NOTIFICATION MESSAGE (Shopping Cart style) ---
     # Only notify if something new was added
     if new_datasets_list:
         msg = f"**Shopping Cart Updated:** Added {len(new_datasets_list)} new datasets. Total in workspace: {len(datasets_info)}."
-        st.session_state.messages_search.append({
-            "role": "assistant",
-            "content": msg,
-            "table": datasets_info.to_json(orient="split")
-        })
+        if "messages_search" in session_data:
+            session_data["messages_search"].append({
+                "role": "assistant",
+                "content": msg,
+                "table": datasets_info.to_json(orient="split")
+            })
 
     # Create prompt for the search agent with ALL accumulated datasets
     datasets_description = ""

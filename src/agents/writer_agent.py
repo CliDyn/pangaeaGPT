@@ -3,7 +3,7 @@
 import logging
 from typing import List, Dict, Any
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_classic.agents import create_openai_tools_agent, AgentExecutor
+from langchain.agents import create_openai_tools_agent, AgentExecutor
 
 from ..config import IS_CLI_MODE
 from ..llm_factory import get_llm  # Use the new factory
@@ -48,6 +48,7 @@ def create_writer_agent(datasets_info: List[Dict[str, Any]] = None):
     prompt = ChatPromptTemplate.from_messages(
         [
             ("system", system_prompt),
+            ("user", "{input}"),
             MessagesPlaceholder(variable_name="messages"),
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ]

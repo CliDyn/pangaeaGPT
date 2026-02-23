@@ -1,7 +1,6 @@
 # src/agents/oceanographer_agent.py (Refactored)
 import logging
-import streamlit as st
-# Removed redundant imports (os, pandas, xarray, langchain_core.prompts, langchain.agents)
+# Removed redundant imports
 
 # Import the new helper functions from base.py
 from .base import prepare_visualization_environment, create_standard_agent_executor
@@ -18,12 +17,12 @@ from ..tools.visualization_tools import (
 from ..tools.era5_retrieval_tool import era5_retrieval_tool
 from ..tools.copernicus_marine_tool import copernicus_marine_tool
 
-def create_oceanographer_agent(user_query, datasets_info):
+def create_oceanographer_agent(user_query, datasets_info, session_id="default"):
     """
     Creates the Oceanographer agent specialized in marine data visualization.
     """
     # Use the helper function to prepare the environment
-    datasets, datasets_text, dataset_variables = prepare_visualization_environment(datasets_info)
+    datasets, datasets_text, dataset_variables = prepare_visualization_environment(datasets_info, session_id=session_id)
 
     # Generate the specific prompt for this agent
     prompt = Prompts.generate_oceanographer_agent_system_prompt(user_query, datasets_text, dataset_variables)
@@ -35,7 +34,7 @@ def create_oceanographer_agent(user_query, datasets_info):
     repl_tool = CustomPythonREPLTool(
         datasets=datasets,
         results_dir=datasets.get("results_dir"),
-        session_key=st.session_state.get("thread_id", "default")
+        session_key=session_id
     )
 
     # Define the tools (Oceanographer includes ERA5 and Copernicus)

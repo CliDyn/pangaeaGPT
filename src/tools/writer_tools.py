@@ -57,7 +57,7 @@ def describe_images(image_paths: List[str]) -> str:
                         ],
                     }
                 ],
-                max_tokens=500,
+                max_completion_tokens=500,
             )
             description = response.choices[0].message.content
             descriptions.append(f"**Figure {i+1} ({os.path.basename(image_path)})**:\n{description}")

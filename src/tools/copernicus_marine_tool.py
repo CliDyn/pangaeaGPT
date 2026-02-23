@@ -25,66 +25,67 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 class CopernicusMarineRetrievalArgs(BaseModel):
     """Arguments for the Copernicus Marine data retrieval tool."""
     dataset_id: Literal[
-        # Physics datasets (daily)
-        "cmems_mod_glo_phy_my_0.083deg_P1D-m", 
-        "cmems_mod_glo_phy_myint_0.083deg_P1D-m",
-        # Biogeochemistry datasets (daily)
+        # ========== MULTI-YEAR REANALYSIS (1993-2021) ==========
+        # All 3D variables in one dataset
+        "cmems_mod_glo_phy_my_0.083deg_P1D-m",
+        # ========== ANALYSIS/FORECAST (2021-present) ==========
+        # 3D variables are in SEPARATE datasets by variable type:
+        "cmems_mod_glo_phy-thetao_anfc_0.083deg_P1D-m",  # temperature only
+        "cmems_mod_glo_phy-so_anfc_0.083deg_P1D-m",      # salinity only
+        "cmems_mod_glo_phy-cur_anfc_0.083deg_P1D-m",     # currents (uo, vo)
+        "cmems_mod_glo_phy_anfc_0.083deg_P1D-m",         # 2D surface vars only
+        # ========== BIOGEOCHEMISTRY ==========
         "cmems_mod_glo_bgc_my_0.25deg_P1D-m",
-        "cmems_mod_glo_bgc_myint_0.25deg_P1D-m"
+        "cmems_mod_glo_bgc-plankton_anfc_0.25deg_P1D-m",
+        "cmems_mod_glo_bgc-nut_anfc_0.25deg_P1D-m",
     ] = Field(
-        description="The Copernicus Marine dataset ID to retrieve. Available datasets include:\n"
-        "- Physics datasets (1/12° resolution, ~8km):\n"
-        "  * 'cmems_mod_glo_phy_my_0.083deg_P1D-m': Global Ocean Physics daily mean, 1992-2021 (reanalysis)\n"
-        "  * 'cmems_mod_glo_phy_myint_0.083deg_P1D-m': Global Ocean Physics daily mean, 2021-present (interim)\n"
-        "- Biogeochemistry datasets (1/4° resolution, ~25km):\n"
-        "  * 'cmems_mod_glo_bgc_my_0.25deg_P1D-m': Global Ocean Biogeochemistry daily mean, 1993-2022 (reanalysis)\n"
-        "  * 'cmems_mod_glo_bgc_myint_0.25deg_P1D-m': Global Ocean Biogeochemistry daily mean, 2023-present (interim)"
+        description="The Copernicus Marine dataset ID. IMPORTANT - choose based on time period AND variable:\n\n"
+        "FOR HISTORICAL DATA (1993-2021):\n"
+        "  * 'cmems_mod_glo_phy_my_0.083deg_P1D-m': ALL physics vars (thetao, so, uo, vo, zos, etc.)\n\n"
+        "FOR RECENT DATA (2021-present) - variables are SPLIT into separate datasets:\n"
+        "  * 'cmems_mod_glo_phy-thetao_anfc_0.083deg_P1D-m': Temperature ONLY (thetao)\n"
+        "  * 'cmems_mod_glo_phy-so_anfc_0.083deg_P1D-m': Salinity ONLY (so)\n"
+        "  * 'cmems_mod_glo_phy-cur_anfc_0.083deg_P1D-m': Currents ONLY (uo, vo)\n"
+        "  * 'cmems_mod_glo_phy_anfc_0.083deg_P1D-m': 2D surface vars (zos, mlotst, siconc, etc.)\n\n"
+        "FOR BIOGEOCHEMISTRY:\n"
+        "  * 'cmems_mod_glo_bgc_my_0.25deg_P1D-m': All BGC vars, 1993-2022\n"
+        "  * 'cmems_mod_glo_bgc-plankton_anfc_0.25deg_P1D-m': Chlorophyll (chl), 2022-present\n"
+        "  * 'cmems_mod_glo_bgc-nut_anfc_0.25deg_P1D-m': Nutrients (no3, po4, si), 2022-present"
     )
     variables: List[str] = Field(
-        description="List of variable names to extract, specific to each dataset:\n"
-        "- Physics variables (cmems_mod_glo_phy_*_P1D-m):\n"
-        "  * thetao: Potential temperature (°C)\n"
-        "  * so: Salinity (PSU)\n"
-        "  * uo: Eastward ocean current velocity (m/s)\n"
-        "  * vo: Northward ocean current velocity (m/s)\n"
-        "  * zos: Sea surface height (m)\n"
-        "  * mlotst: Mixed layer thickness (m)\n"
-        "  * bottomT: Sea floor potential temperature (°C)\n"
-        "  * siconc: Sea ice concentration (fraction)\n"
-        "  * sithick: Sea ice thickness (m)\n"
-        "  * usi: Eastward sea ice velocity (m/s)\n"
-        "  * vsi: Northward sea ice velocity (m/s)\n"
-        "- Biogeochemistry variables (cmems_mod_glo_bgc_*_P1D-m):\n"
-        "  * chl: Chlorophyll concentration (mg/m³)\n"
-        "  * no3: Nitrate concentration (mmol/m³)\n"
-        "  * po4: Phosphate concentration (mmol/m³)\n"
-        "  * si: Silicate concentration (mmol/m³)\n"
-        "  * nppv: Net primary production (mg/m³/day)\n"
-        "  * o2: Dissolved oxygen (mmol/m³)"
+        description="Variable names. Must match the dataset:\n"
+        "- cmems_mod_glo_phy_my (1993-2021): thetao, so, uo, vo, zos, mlotst, bottomT, siconc, sithick, usi, vsi\n"
+        "- cmems_mod_glo_phy-thetao_anfc (2021+): thetao ONLY\n"
+        "- cmems_mod_glo_phy-so_anfc (2021+): so ONLY\n"
+        "- cmems_mod_glo_phy-cur_anfc (2021+): uo, vo ONLY\n"
+        "- cmems_mod_glo_phy_anfc (2021+): zos, mlotst, siconc, sithick, usi, vsi (2D surface vars)\n"
+        "- cmems_mod_glo_bgc_my: chl, no3, po4, si, nppv, o2\n"
+        "- cmems_mod_glo_bgc-plankton_anfc: chl\n"
+        "- cmems_mod_glo_bgc-nut_anfc: no3, po4, si"
     )
     start_datetime: str = Field(
-        description="Start date in 'YYYY-MM-DD' format. Available range depends on dataset."
+        description="Start date in 'YYYY-MM-DD' format."
     )
     end_datetime: str = Field(
-        description="End date in 'YYYY-MM-DD' format. Available range depends on dataset."
+        description="End date in 'YYYY-MM-DD' format."
     )
     minimum_longitude: float = Field(
-        description="Minimum longitude in decimal degrees (-180 to 180)."
+        description="Minimum longitude (-180 to 180)."
     )
     maximum_longitude: float = Field(
-        description="Maximum longitude in decimal degrees (-180 to 180)."
+        description="Maximum longitude (-180 to 180)."
     )
     minimum_latitude: float = Field(
-        description="Minimum latitude in decimal degrees (-90 to 90). Note: Physics datasets cover -80 to 90°N, Biogeochemistry datasets cover -89 to 90°N."
+        description="Minimum latitude (-90 to 90)."
     )
     maximum_latitude: float = Field(
-        description="Maximum latitude in decimal degrees (-90 to 90). Note: Physics datasets cover -80 to 90°N, Biogeochemistry datasets cover -89 to 90°N."
+        description="Maximum latitude (-90 to 90)."
     )
     minimum_depth: Optional[float] = Field(
-        None, description="Optional: Minimum depth in meters (positive value). Physics datasets have 50 vertical levels, Biogeochemistry datasets have 75 vertical levels."
+        None, description="Minimum depth in meters. IMPORTANT: First depth level is ~0.5m, not 0. Use 0.5 for surface."
     )
     maximum_depth: Optional[float] = Field(
-        None, description="Optional: Maximum depth in meters (positive value). Physics datasets have 50 vertical levels (max ~5728m), Biogeochemistry datasets have 75 vertical levels (max ~5902m)."
+        None, description="Maximum depth in meters. Use same value as minimum_depth for single depth level (e.g., 0.5 for surface)."
     )
     vertical_axis: Optional[Literal['depth']] = Field(
         'depth', description="Vertical axis type (only 'depth' is supported)."
@@ -189,12 +190,26 @@ def retrieve_copernicus_marine_data(
         # 1) Determine directory
         copernicus_dir = WorkspaceManager.get_data_dir(subfolder="copernicus_data")
         logging.info(f"Copernicus output directory: {copernicus_dir}")
-                
-        # 2) Load the dataset from Copernicus Marine Service
-        logging.info(f"Loading dataset: {dataset_id}")
-        
-        # Prepare parameters dictionary
-        params = {
+
+        # Fix depth values: minimum valid depth is ~0.5m, not 0
+        if minimum_depth is not None and minimum_depth < 0.5:
+            logging.info(f"Adjusting minimum_depth from {minimum_depth} to 0.5 (first valid depth level)")
+            minimum_depth = 0.5
+        if maximum_depth is not None and maximum_depth < 0.5:
+            logging.info(f"Adjusting maximum_depth from {maximum_depth} to 0.5 (first valid depth level)")
+            maximum_depth = 0.5
+
+        # 2) Generate output filename and download data
+        nc_filename = _generate_descriptive_filename(
+            variables, start_datetime, end_datetime, minimum_depth, maximum_depth
+        )
+        nc_path = os.path.join(copernicus_dir, nc_filename)
+
+        # Use subset() to download directly to file - avoids zarr store issues
+        # that occur with open_dataset() in newer zarr versions
+        logging.info(f"Downloading data directly to: {nc_path}")
+
+        subset_params = {
             "dataset_id": dataset_id,
             "variables": variables,
             "start_datetime": start_datetime,
@@ -203,30 +218,26 @@ def retrieve_copernicus_marine_data(
             "maximum_longitude": maximum_longitude,
             "minimum_latitude": minimum_latitude,
             "maximum_latitude": maximum_latitude,
-            "vertical_axis": vertical_axis
+            "output_filename": nc_filename,
+            "output_directory": copernicus_dir,
+            "overwrite": True,
         }
-        
-        # Add optional parameters only if they're provided
-        if minimum_depth is not None:
-            params["minimum_depth"] = minimum_depth
-        if maximum_depth is not None:
-            params["maximum_depth"] = maximum_depth
-            
-        # Load the dataset
-        dataset = copernicusmarine.open_dataset(**params)
-        
-        # Get some information about the dataset
-        variables_info = ", ".join(list(dataset.data_vars))
-        
-        # 3) Save to NetCDF file
-        nc_filename = _generate_descriptive_filename(
-            variables, start_datetime, end_datetime, minimum_depth, maximum_depth
-        )
-        nc_path = os.path.join(copernicus_dir, nc_filename)
 
-        logging.info(f"Saving to NetCDF file: {nc_path}")
-        dataset.to_netcdf(nc_path)
-        logging.info(f"Successfully saved to NetCDF: {nc_path}")
+        # Add optional depth parameters
+        if minimum_depth is not None:
+            subset_params["minimum_depth"] = minimum_depth
+        if maximum_depth is not None:
+            subset_params["maximum_depth"] = maximum_depth
+
+        # Download the data using subset()
+        copernicusmarine.subset(**subset_params)
+
+        logging.info(f"Successfully downloaded to: {nc_path}")
+
+        # Read back to get variable info
+        dataset = xr.open_dataset(nc_path)
+        variables_info = ", ".join(list(dataset.data_vars))
+        dataset.close()
 
         relative_path = os.path.join('copernicus_data', nc_filename).replace("\\", "/")
         

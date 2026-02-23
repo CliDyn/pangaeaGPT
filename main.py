@@ -2,8 +2,8 @@
 import logging
 import uuid
 import os
+import re  # Added for filename sanitization
 from typing import List
-import streamlit as st
 
 import pandas as pd
 from langchain_community.chat_message_histories import ChatMessageHistory
@@ -52,10 +52,8 @@ def initialize_session_state(session_state: dict):
             session_state[key] = value
 
 
-def get_search_agent(datasets_info, model_name, api_key):
-    # Add search_mode parameter
-    search_mode = st.session_state.get("search_mode", "simple")
-    return create_search_agent(datasets_info=datasets_info, search_mode=search_mode)
+def get_search_agent(datasets_info, model_name=None, api_key=None, search_mode="simple", session_id="default"):
+    return create_search_agent(datasets_info=datasets_info, search_mode=search_mode, session_id=session_id)
 
 
 def process_search_query(user_input: str, search_agent, session_data: dict):
@@ -142,6 +140,7 @@ def add_assistant_message_to_search(content: str, session_data: dict):
 def load_selected_datasets_into_cache(selected_datasets, session_data: dict):
     """
     Loads selected datasets into cache by fetching them into a single sandbox with subdirectories.
+    Uses meaningful folder names based on dataset title and DOI for better agent context.
     
     Args:
         selected_datasets: List or set of DOIs to fetch.
@@ -161,20 +160,69 @@ def load_selected_datasets_into_cache(selected_datasets, session_data: dict):
     os.makedirs(sandbox_main, exist_ok=True)
     logging.info(f"Using persistent main sandbox for session {thread_id}: {sandbox_main}")
 
+    # Prepare lookup dataframe for names
+    datasets_df = session_data.get("datasets_info")
+
     for i, doi in enumerate(selected_datasets, 1):
         logging.info(f"Processing DOI: {doi}")
         if doi not in session_data["datasets_cache"]:
-            # Create a more descriptive subdirectory for this dataset
-            sanitized_doi = doi.replace('/', '_').replace(':', '_')
-            target_dir = os.path.join(sandbox_main, f"dataset_{i}_{sanitized_doi}")
-            os.makedirs(target_dir, exist_ok=True)
+            # --- MEANINGFUL FOLDER NAMING LOGIC ---
+            # 1. Default base name (fallback)
+            folder_name_base = f"dataset_{i}"
             
-            # Fetch dataset into the subdirectory
+            # 2. Try to extract meaningful name from metadata
+            if datasets_df is not None and not datasets_df.empty:
+                try:
+                    # Find row matching the DOI
+                    matches = datasets_df[datasets_df["DOI"] == doi]
+                    if not matches.empty:
+                        raw_name = matches.iloc[0]["Name"]
+                        raw_name_str = str(raw_name)
+
+                        # --- SIMPLE TITLE EXTRACTION ---
+                        # Split on "): " to remove "Author (Year)" prefix
+                        # e.g., "Rex, Markus (2020): Links to master tracks..." -> "Links to master tracks..."
+                        if "): " in raw_name_str:
+                            title_part = raw_name_str.split("): ", 1)[1]
+                        else:
+                            title_part = raw_name_str
+
+                        # Sanitize name: Keep only alphanumeric and spaces
+                        clean_name = re.sub(r'[^a-zA-Z0-9\s]', '', title_part)
+                        
+                        # Take first 7 meaningful words to form a readable slug
+                        words = clean_name.split()
+                        if words:
+                            # Join with underscores (e.g., "Links_to_master_tracks_in_different_resolutions")
+                            folder_name_base = "_".join(words[:7])
+                            
+                except Exception as e:
+                    logging.warning(f"Error generating folder name for DOI {doi}: {e}")
+            
+            # 3. Create unique suffix from DOI (e.g., PANGAEA.123456 -> 123456)
+            # Minimal suffix to ensure uniqueness without clutter
+            doi_suffix = doi.split('/')[-1].replace('PANGAEA.', '').replace('.', '_')
+            
+            # 4. Construct final folder name
+            folder_name = f"{folder_name_base}_{doi_suffix}"
+            
+            # 5. Safety: Remove any remaining unsafe chars and limit length
+            folder_name = re.sub(r'[^\w\-_]', '', folder_name)
+            if len(folder_name) > 150:
+                folder_name = folder_name[:150]
+
+            # Create the specific directory
+            target_dir = os.path.join(sandbox_main, folder_name)
+            os.makedirs(target_dir, exist_ok=True)
+            # --------------------------------------
+            
+            # Fetch dataset into the descriptive subdirectory
             from src.search.dataset_utils import fetch_dataset
             dataset_path, name = fetch_dataset(doi, target_dir=target_dir)
+            
             if dataset_path is not None:
                 session_data["datasets_cache"][doi] = (dataset_path, name)  # dataset_path is target_dir
-                logging.info(f"Loaded and cached dataset for DOI {doi}, path: {dataset_path}, name: {name}")
+                logging.info(f"Loaded and cached dataset for DOI {doi} at: {dataset_path}")
             else:
                 logging.warning(f"Failed to load dataset for DOI {doi}")
         else:

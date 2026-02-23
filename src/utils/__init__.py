@@ -6,11 +6,11 @@ import re
 import logging
 import pandas as pd
 import matplotlib.pyplot as plt
-import streamlit as st
 import time
 import json
 
 from .workspace import WorkspaceManager
+from .session_manager import SessionManager
 
 # Generate a unique image path for saving plots
 def generate_unique_image_path(sandbox_path=None):
@@ -35,13 +35,13 @@ def sanitize_input(query: str) -> str:
     return query.strip()
 
 # Define the function to extract the last Python REPL command
-def get_last_python_repl_command():
-    import streamlit as st  # Ensure Streamlit is imported
-    if 'intermediate_steps' not in st.session_state:
+def get_last_python_repl_command(session_id="default"):
+    session_data = SessionManager.get_session(session_id)
+    if 'intermediate_steps' not in session_data:
         logging.warning("No intermediate steps found in session state.")
         return None
 
-    intermediate_steps = st.session_state['intermediate_steps']
+    intermediate_steps = session_data['intermediate_steps']
     python_repl_commands = []
     for step in intermediate_steps:
         action = step[0]

@@ -6,7 +6,6 @@ import logging
 import pandas as pd
 import matplotlib.pyplot as plt
 import xarray as xr
-import streamlit as st
 from io import StringIO
 from pydantic import BaseModel, Field, PrivateAttr
 from langchain_experimental.tools import PythonREPLTool
@@ -30,6 +29,7 @@ except ImportError:
 
 from ..utils import log_history_event
 from ..utils.workspace import WorkspaceManager
+from ..utils.session_manager import SessionManager
 
 # --- New Jupyter Kernel Executor ---
 
@@ -331,9 +331,9 @@ class CustomPythonREPLTool(PythonREPLTool):
         # -----------------------------
 
         if generated_plots:
-             if 'streamlit' in sys.modules and hasattr(st, 'session_state'):
-                st.session_state.new_plot_generated = True
-             log_history_event(st.session_state, "plot_generated",
+             session_data = SessionManager.get_session(session_id)
+             session_data["new_plot_generated"] = True
+             log_history_event(session_data, "plot_generated",
                              {"plot_paths": generated_plots, "agent": "PythonREPL"})
 
         return {

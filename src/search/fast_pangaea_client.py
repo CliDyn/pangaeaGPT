@@ -1,7 +1,13 @@
 # src/search/fast_pangaea_client.py
 """
 Fast OAI-PMH Client for PANGAEA Metadata
-Replaces slow pangaeapy calls with direct XML parsing for search results.
+With Machine-Actionable Intelligence for AI Agents.
+
+Features:
+- Matrix dimensions (row/col counts) for memory safety
+- Column statistics (min/max) for instant range queries
+- Feature flags for smart agent routing
+- Semantic IDs for parameter disambiguation
 """
 
 import logging
@@ -18,6 +24,20 @@ NS = {
 
 BASE_URL = "https://ws.pangaea.de/oai/provider"
 REQUEST_TIMEOUT = 15  # seconds
+
+
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+
+def txt(elem) -> Optional[str]:
+    """Safe text extraction from XML element"""
+    return elem.text.strip() if elem is not None and elem.text else None
+
+
+def attr(elem, name) -> Optional[str]:
+    """Safe attribute extraction from XML element"""
+    return elem.get(name) if elem is not None else None
 
 
 def extract_pangaea_id(doi: str) -> Optional[str]:
@@ -51,17 +71,145 @@ def extract_pangaea_id(doi: str) -> Optional[str]:
     return None
 
 
+# =============================================================================
+# RICH PARAMETER PARSING (with Stats & Semantics)
+# =============================================================================
+
+def parse_matrix_column(col_elem) -> Optional[dict]:
+    """
+    Parse ColumnType with FULL intelligence:
+    - Parameter name/shortName/unit
+    - Semantic ID for disambiguation
+    - Pre-calculated statistics (min/max/mean)
+    - Column type and format
+    """
+    if col_elem is None:
+        return None
+
+    param_elem = col_elem.find('md:parameter', NS)
+    if param_elem is None:
+        return None
+
+    # Get semantic term (URI to standard vocabulary)
+    term_elem = param_elem.find('md:term', NS)
+    term_uri = attr(term_elem, 'URI') if term_elem is not None else None
+
+    # Extract pre-calculated statistics (INSTANT AI ANSWERS!)
+    stats = {}
+    for stat_name in ['min', 'max', 'mean', 'median']:
+        val = txt(col_elem.find(f'md:{stat_name}', NS))
+        if val:
+            stats[stat_name] = val
+
+    return {
+        'name': txt(param_elem.find('md:name', NS)),
+        'shortName': txt(param_elem.find('md:shortName', NS)),
+        'unit': txt(param_elem.find('md:unit', NS)),
+        'group': txt(param_elem.find('md:group', NS)),
+        'id': attr(param_elem, 'id'),           # Semantic ID (e.g., "2001" for Temp)
+        'semantic_uri': term_uri,               # Link to vocabulary
+        'type': attr(col_elem, 'type'),         # geocode, data, etc.
+        'format': attr(col_elem, 'format'),     # Date format, etc.
+        'source': attr(col_elem, 'source'),
+        'stats': stats if stats else None       # Pre-calculated ranges!
+    }
+
+
+def parse_distribution(md_root) -> List[dict]:
+    """Extract direct download links (the "Golden Link")"""
+    dists = []
+    for dist in md_root.findall('md:distribution', NS):
+        res = dist.find('md:onlineResource', NS)
+        if res is not None:
+            dists.append({
+                'uri': txt(res.find('md:URI', NS)),
+                'function': attr(res, 'function'),  # e.g., "download"
+                'format': attr(dist, 'format')      # e.g., "text/tab-separated-values"
+            })
+    return dists
+
+
+def compute_feature_flags(matrix_stats: dict, parameters: List[dict]) -> dict:
+    """
+    Compute AI-ready feature flags for smart agent routing.
+
+    Returns flags like:
+    - is_heavy: Dataset has >1M rows (use Dask!)
+    - likely_map: Has lat/lon (send to VisualizationAgent)
+    - likely_profile: Has depth but no time (vertical profile)
+    - has_time: Time-series data
+    - has_depth: Depth/pressure data
+    - has_locations: Geocoded data
+    """
+    flags = {
+        'is_heavy': False,
+        'likely_map': False,
+        'likely_profile': False,
+        'has_time': False,
+        'has_depth': False,
+        'has_locations': False,
+        'is_parent': False
+    }
+
+    # Check row count for memory safety
+    row_count = matrix_stats.get('rowCount')
+    if row_count:
+        try:
+            if int(row_count) > 1_000_000:
+                flags['is_heavy'] = True
+        except ValueError:
+            pass
+
+    # Parent datasets have no data columns
+    if not parameters:
+        flags['is_parent'] = True
+        return flags
+
+    # Analyze parameters for context
+    for p in parameters:
+        if not p:
+            continue
+
+        p_name = (p.get('name') or '').lower()
+        p_short = (p.get('shortName') or '').lower()
+        p_source = (p.get('source') or '').lower()
+        p_type = (p.get('type') or '').lower()
+        combined = f"{p_name} {p_short}"
+
+        # Spatial detection
+        if 'latitude' in combined or 'longitude' in combined or p_source == 'geocode':
+            flags['has_locations'] = True
+            flags['likely_map'] = True
+
+        # Depth detection
+        if 'depth' in combined or 'pressure' in combined:
+            flags['has_depth'] = True
+
+        # Time detection
+        if 'date' in combined or 'time' in combined or p_type == 'datetime':
+            flags['has_time'] = True
+
+    # Heuristics for profile detection
+    if flags['has_depth'] and not flags['has_time']:
+        flags['likely_profile'] = True
+
+    return flags
+
+
+# =============================================================================
+# MAIN FETCH FUNCTION
+# =============================================================================
+
 def fetch_metadata_fast(doi: str) -> Optional[Dict[str, Any]]:
     """
-    Fetch PANGAEA metadata using OAI-PMH protocol (pan_md format).
-    Much faster than pangaeapy for metadata-only retrieval.
+    Fetch PANGAEA metadata with FULL machine-actionable intelligence.
 
-    Args:
-        doi: PANGAEA DOI in any supported format
-
-    Returns:
-        Dict with keys: title, abstract, parameters, authors, year
-        None if fetch fails
+    Returns dict with:
+    - title, abstract, year, authors (human-readable)
+    - parameters_rich: List of parameter dicts with stats
+    - matrix_stats: {rowCount, colCount} for memory planning
+    - feature_flags: {is_heavy, likely_map, ...} for routing
+    - distributions: Direct download links
     """
     pangaea_id = extract_pangaea_id(doi)
     if not pangaea_id:
@@ -100,62 +248,76 @@ def fetch_metadata_fast(doi: str) -> Optional[Dict[str, Any]]:
             logging.warning(f"No metadata found for {pangaea_id}")
             return None
 
-        # Extract fields from pan_md format
-        result = {
-            'pangaea_id': pangaea_id,
-            'title': None,
-            'abstract': None,
-            'parameters': [],
-            'authors': [],
-            'year': None
-        }
+        # Find MetaData root element
+        md_root = metadata.find('md:MetaData', NS)
+        if md_root is None:
+            logging.warning(f"No MetaData element for {pangaea_id}")
+            return None
 
-        # Title
-        title_elem = metadata.find('.//md:citation/md:title', NS)
-        if title_elem is not None and title_elem.text:
-            result['title'] = title_elem.text.strip()
+        # === 1. MATRIX STRUCTURE (Memory Safety) ===
+        matrix_elem = md_root.find('md:matrix', NS)
+        matrix_stats = {}
+        if matrix_elem is not None:
+            matrix_stats = {
+                'colCount': attr(matrix_elem, 'colCount'),
+                'rowCount': attr(matrix_elem, 'rowCount')  # Critical for Dask vs Pandas!
+            }
 
-        # Abstract
-        abstract_elem = metadata.find('.//md:abstract', NS)
-        if abstract_elem is not None and abstract_elem.text:
-            result['abstract'] = abstract_elem.text.strip()
+        # === 2. RICH PARAMETERS (with Stats) ===
+        parameters_rich = []
+        parameters_simple = []  # For backward compatibility
 
-        # Year
-        year_elem = metadata.find('.//md:citation/md:year', NS)
-        if year_elem is not None and year_elem.text:
-            result['year'] = year_elem.text.strip()
+        for col in md_root.findall('md:matrixColumn', NS):
+            parsed = parse_matrix_column(col)
+            if parsed:
+                parameters_rich.append(parsed)
+                # Also build simple list for backward compatibility
+                name = parsed.get('shortName') or parsed.get('name')
+                if name:
+                    parameters_simple.append(name)
 
-        # Authors
-        for author in metadata.findall('.//md:citation/md:author', NS):
-            last_name = author.find('md:lastName', NS)
-            first_name = author.find('md:firstName', NS)
-            if last_name is not None and last_name.text:
-                name = last_name.text
-                if first_name is not None and first_name.text:
-                    name = f"{last_name.text}, {first_name.text}"
-                result['authors'].append(name)
-
-        # Parameters (variable names)
-        for param in metadata.findall('.//md:matrixColumn', NS):
-            param_elem = param.find('md:parameter/md:name', NS)
-            if param_elem is not None and param_elem.text:
-                result['parameters'].append(param_elem.text.strip())
-            else:
-                # Try shortName as fallback
-                short_name = param.find('md:parameter/md:shortName', NS)
-                if short_name is not None and short_name.text:
-                    result['parameters'].append(short_name.text.strip())
-
-        # Remove duplicates from parameters while preserving order
+        # Remove duplicates from simple list
         seen = set()
         unique_params = []
-        for p in result['parameters']:
+        for p in parameters_simple:
             if p not in seen:
                 seen.add(p)
                 unique_params.append(p)
-        result['parameters'] = unique_params
 
-        return result
+        # === 3. FEATURE FLAGS (Agent Routing) ===
+        feature_flags = compute_feature_flags(matrix_stats, parameters_rich)
+
+        # === 4. DISTRIBUTIONS (Direct Links) ===
+        distributions = parse_distribution(md_root)
+
+        # === 5. BASIC INFO ===
+        title = txt(md_root.find('md:citation/md:title', NS))
+        abstract = txt(md_root.find('md:abstract', NS))
+        year = txt(md_root.find('md:citation/md:year', NS))
+
+        # Authors
+        authors = []
+        for author in md_root.findall('md:citation/md:author', NS):
+            last_name = txt(author.find('md:lastName', NS))
+            first_name = txt(author.find('md:firstName', NS))
+            if last_name:
+                name = f"{last_name}, {first_name}" if first_name else last_name
+                authors.append(name)
+
+        return {
+            'pangaea_id': pangaea_id,
+            'title': title,
+            'abstract': abstract,
+            'year': year,
+            'authors': authors,
+
+            # Machine-Actionable Intelligence
+            'parameters': unique_params,        # Simple list (backward compat)
+            'parameters_rich': parameters_rich, # Full dicts with stats!
+            'matrix_stats': matrix_stats,       # Row/col counts
+            'feature_flags': feature_flags,     # Agent routing hints
+            'distributions': distributions      # Direct download links
+        }
 
     except requests.exceptions.Timeout:
         logging.warning(f"Timeout fetching metadata for {pangaea_id}")
@@ -171,18 +333,91 @@ def fetch_metadata_fast(doi: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def format_parameters(params: List[str], max_count: int = 10) -> str:
+# =============================================================================
+# FORMATTING FUNCTIONS
+# =============================================================================
+
+def format_parameters(params: List[Any], max_count: int = 10) -> str:
     """
-    Format parameters list as a comma-separated string.
-    Truncates with '...' if more than max_count.
+    Format parameters with ranges for AI Agents.
+
+    Handles both:
+    - Simple string list (backward compat)
+    - Rich parameter dicts with stats (shows ranges!)
+
+    Output example: "Temp[-1.5..4.0], Salinity[32..35], Depth"
     """
     if not params:
         return "No parameters available"
 
-    if len(params) > max_count:
-        return ', '.join(params[:max_count]) + "..."
-    return ', '.join(params)
+    out_list = []
 
+    # Check if we have rich parameter dicts
+    if params and isinstance(params[0], dict):
+        for p in params[:max_count]:
+            name = p.get('shortName') or p.get('name')
+            if not name:
+                continue
+
+            stats = p.get('stats') or {}
+            unit = p.get('unit')
+
+            # Build rich string with stats
+            if stats and stats.get('min') is not None and stats.get('max') is not None:
+                # Show range: "Temp[-1.5..4.0]"
+                out_list.append(f"{name}[{stats['min']}..{stats['max']}]")
+            elif unit:
+                # Show unit: "Temp (°C)"
+                out_list.append(f"{name} ({unit})")
+            else:
+                out_list.append(name)
+    else:
+        # Simple string list (backward compatibility)
+        out_list = [str(p) for p in params[:max_count] if p]
+
+    if not out_list:
+        return "No parameters available"
+
+    result = ', '.join(out_list)
+    if len(params) > max_count:
+        result += "..."
+
+    # Truncate if too long
+    if len(result) > 300:
+        result = result[:300] + "..."
+
+    return result
+
+
+def format_feature_tags(flags: dict, matrix_stats: dict) -> str:
+    """
+    Format feature flags as tags for agent prompts.
+
+    Output example: "[MAP] [HEAVY_DATA] [Rows:5000000]"
+    """
+    tags = []
+
+    if flags.get('likely_map'):
+        tags.append("MAP")
+    if flags.get('likely_profile'):
+        tags.append("PROFILE")
+    if flags.get('is_heavy'):
+        tags.append("HEAVY_DATA")
+    if flags.get('is_parent'):
+        tags.append("COLLECTION")
+    if flags.get('has_time'):
+        tags.append("TIMESERIES")
+
+    # Add row count if available
+    if matrix_stats.get('rowCount'):
+        tags.append(f"Rows:{matrix_stats['rowCount']}")
+
+    return f"[{' '.join(tags)}]" if tags else ""
+
+
+# =============================================================================
+# BATCH OPERATIONS
+# =============================================================================
 
 def fetch_metadata_batch(dois: List[str], max_workers: int = 5) -> Dict[str, Optional[Dict[str, Any]]]:
     """
@@ -201,13 +436,11 @@ def fetch_metadata_batch(dois: List[str], max_workers: int = 5) -> Dict[str, Opt
     results = {}
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all tasks
         future_to_doi = {
             executor.submit(fetch_metadata_fast, doi): doi
             for doi in dois
         }
 
-        # Collect results as they complete
         for future in as_completed(future_to_doi):
             doi = future_to_doi[future]
             try:
@@ -217,7 +450,6 @@ def fetch_metadata_batch(dois: List[str], max_workers: int = 5) -> Dict[str, Opt
                 logging.warning(f"Error fetching {doi}: {e}")
                 results[doi] = None
 
-            # Small delay between completions to be rate-limit friendly
             time.sleep(0.1)
 
     return results
