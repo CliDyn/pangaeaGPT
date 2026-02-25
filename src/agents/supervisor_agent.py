@@ -316,8 +316,8 @@ For visualization and data analysis requests (like plotting, data manipulation, 
             logging.info(f"Routing to next agent in plan: {agent_to_call} for task: '{next_task['task']}'")
         else:
             # If there are no more pending tasks, the plan is complete.
-            state["next"] = "FINISH"
-            logging.info("No pending tasks in plan. Routing to FINISH.")
+            state["next"] = "RESPOND"
+            logging.info("No pending tasks in plan. Routing to RESPOND.")
 
         return state
 

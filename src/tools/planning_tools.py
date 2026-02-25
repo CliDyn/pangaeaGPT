@@ -22,13 +22,8 @@ def planning_tool(user_query: str, conversation_history: str, available_agents: 
     A tool for creating or updating a plan based on user query and conversation.
     Returns a JSON string containing task steps with assigned agents and status.
     """
-    # Check if we're in CLI mode
-    from ..config import IS_CLI_MODE
-    if IS_CLI_MODE:
-        model_name = "gpt-5"  # Default model for CLI
-    else:
-        model_name = st.session_state.get("model_name", "gpt-4.1")
-    llm = ChatOpenAI(api_key=API_KEY, model_name=model_name)
+    from ..llm_factory import get_llm
+    llm = get_llm(temperature=0.0)
     
     system_message = """
     You are a Planning Tool that creates MINIMAL, EFFICIENT task plans for data analysis workflows.

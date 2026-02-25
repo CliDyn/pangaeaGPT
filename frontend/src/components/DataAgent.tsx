@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Send, Loader2, Bot, AlertCircle, Trash2, Download } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { AgentWebSocket } from '../api/client';
+import { WorkspacePanel } from './WorkspacePanel';
 
 interface Message {
     role: 'user' | 'assistant';
@@ -50,11 +51,11 @@ export function DataAgent({ sessionId }: { sessionId: string }) {
                 setIsProcessing(false);
                 setActiveStatus(null);
             },
+            () => setIsConnected(true),
             () => setIsConnected(false)
         );
 
         wsRef.current.connect();
-        setTimeout(() => setIsConnected(true), 0);
 
         return () => {
             wsRef.current?.disconnect();
@@ -75,7 +76,7 @@ export function DataAgent({ sessionId }: { sessionId: string }) {
         wsRef.current?.sendQuery(input);
         setInput('');
         setIsProcessing(true);
-        setActiveStatus("Initializing agents...");
+        setActiveStatus("Initializing agents…");
     };
 
     const handleClearHistory = () => {
@@ -94,66 +95,73 @@ export function DataAgent({ sessionId }: { sessionId: string }) {
     };
 
     return (
-        <div className="flex flex-col h-full bg-transparent max-w-5xl mx-auto w-full relative z-10 border-x border-white/5 shadow-2xl">
-            {/* Header bar with actions */}
+        <div className="flex flex-col h-full bg-pg-bg max-w-5xl mx-auto w-full border-x border-pg-border">
+            {/* Workspace — loaded datasets */}
+            <WorkspacePanel sessionId={sessionId} />
+
+            {/* Action bar */}
             {messages.length > 0 && (
-                <div className="flex items-center justify-between px-6 py-3 border-b border-white/5 bg-slate-900/40 backdrop-blur-md shrink-0">
-                    <span className="text-sm text-slate-400 font-medium">
+                <div className="flex items-center justify-between px-5 py-2.5 border-b border-pg-border bg-pg-surface shrink-0">
+                    <span className="text-xs text-txt-tertiary font-medium">
                         {messages.length} message{messages.length !== 1 ? 's' : ''}
                     </span>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5">
                         <button
                             onClick={handleExportHistory}
-                            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-teal-400 px-3 py-1.5 rounded-lg border border-white/10 hover:border-teal-500/30 transition-all"
+                            className="flex items-center gap-1 text-[11px] text-txt-tertiary hover:text-accent px-2.5 py-1 rounded-lg border border-pg-border hover:border-accent/30 transition-all"
                         >
-                            <Download size={14} /> Export
+                            <Download size={12} /> Export
                         </button>
                         <button
                             onClick={handleClearHistory}
-                            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-red-400 px-3 py-1.5 rounded-lg border border-white/10 hover:border-red-500/30 transition-all"
+                            className="flex items-center gap-1 text-[11px] text-txt-tertiary hover:text-status-danger px-2.5 py-1 rounded-lg border border-pg-border hover:border-status-danger/30 transition-all"
                         >
-                            <Trash2 size={14} /> Clear
+                            <Trash2 size={12} /> Clear
                         </button>
                     </div>
                 </div>
             )}
 
-            <div className="flex-1 overflow-y-auto p-6 space-y-6 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent" ref={scrollRef}>
+            {/* Messages */}
+            <div className="flex-1 overflow-y-auto p-5 space-y-4 scrollbar-thin scrollbar-thumb-txt-tertiary/20 scrollbar-track-transparent" ref={scrollRef}>
                 {messages.length === 0 && !activeStatus && (
-                    <div className="h-full flex flex-col items-center justify-center text-slate-500 opacity-70">
-                        <div className="w-20 h-20 mb-6 rounded-2xl bg-gradient-to-br from-slate-800 to-slate-900 flex items-center justify-center shadow-inner border border-white/5">
-                            <Bot size={40} className="text-teal-500/50" />
+                    <div className="h-full flex flex-col items-center justify-center text-txt-tertiary">
+                        <div className="w-14 h-14 mb-4 rounded-2xl bg-pg-card flex items-center justify-center border border-pg-border">
+                            <Bot size={28} className="text-txt-tertiary/50" />
                         </div>
-                        <p className="text-xl font-display font-medium text-slate-400">Pangaea Data Agent</p>
-                        <p className="text-sm mt-2">Ready to assist with data analysis.</p>
+                        <p className="text-lg font-display font-medium text-txt-secondary">Pangaea Data Agent</p>
+                        <p className="text-xs mt-1 text-txt-tertiary">Ready to assist with data analysis.</p>
                     </div>
                 )}
 
                 {messages.map((m, idx) => (
-                    <div key={idx} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'} animate-in fade-in slide-in-from-bottom-4 duration-500`}>
-                        <div className={`max-w-[85%] rounded-3xl p-6 ${m.role === 'user'
-                            ? 'bg-gradient-to-br from-teal-500 to-cyan-600 text-white shadow-[0_10px_25px_-5px_rgba(20,184,166,0.5)] rounded-tr-sm backdrop-blur-md'
+                    <div key={idx} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'} animate-fade-in`}>
+                        <div className={`max-w-[85%] rounded-2xl p-4 ${m.role === 'user'
+                            ? 'bg-accent text-white rounded-tr-md'
                             : m.isError
-                                ? 'bg-red-950/40 text-red-200 border border-red-500/30 rounded-tl-sm backdrop-blur-md shadow-lg shadow-red-900/20'
-                                : 'glass-card text-slate-200 rounded-tl-sm shadow-[0_10px_30px_-10px_rgba(0,0,0,0.5)]'
+                                ? 'bg-status-danger/8 text-status-danger border border-status-danger/20 rounded-tl-md'
+                                : 'surface-card text-txt-primary rounded-tl-md'
                             }`}>
                             {m.role === 'assistant' && (
-                                <div className="flex items-center gap-3 mb-4 text-sm font-display font-bold text-teal-400 tracking-wide uppercase">
-                                    <div className="w-8 h-8 rounded-full bg-slate-900/80 flex items-center justify-center border border-teal-500/30 shadow-[0_0_10px_rgba(20,184,166,0.3)]">
-                                        <Bot size={16} />
+                                <div className="flex items-center gap-2 mb-3 text-xs font-display font-semibold text-accent tracking-wide uppercase">
+                                    <div className="w-6 h-6 rounded-full bg-accent-subtle flex items-center justify-center border border-accent/20">
+                                        <Bot size={13} />
                                     </div>
                                     Pangaea Agent
                                 </div>
                             )}
 
-                            <div className={`prose prose-sm max-w-none ${m.role === 'user' ? 'prose-invert prose-p:text-white' : 'prose-invert prose-p:text-slate-300 prose-headings:text-slate-100 prose-a:text-teal-400'} prose-p:leading-relaxed prose-pre:bg-slate-950/80 prose-pre:border prose-pre:border-white/10 prose-pre:shadow-inner prose-pre:text-slate-300`}>
+                            <div className={`prose prose-sm max-w-none ${m.role === 'user'
+                                ? 'prose-invert prose-p:text-white/90'
+                                : 'prose-scientific prose-p:text-txt-secondary prose-headings:text-txt-primary prose-a:text-accent prose-strong:text-txt-primary'
+                                } prose-p:leading-relaxed prose-pre:bg-pg-bg prose-pre:border prose-pre:border-pg-border prose-pre:text-txt-secondary text-sm`}>
                                 <ReactMarkdown>{m.content}</ReactMarkdown>
                             </div>
 
                             {m.plots && m.plots.length > 0 && (
-                                <div className="mt-6 grid grid-cols-1 gap-6 bg-slate-950/50 p-6 rounded-2xl border border-white/5 shadow-inner">
+                                <div className="mt-4 grid grid-cols-1 gap-4 bg-pg-bg p-4 rounded-xl border border-pg-border">
                                     {m.plots.map((url, i) => (
-                                        <img key={i} src={`http://127.0.0.1:8000${url}`} alt="Agent Plot" className="rounded-xl border border-white/10 mx-auto shadow-2xl max-h-[500px] object-contain bg-slate-900" />
+                                        <img key={i} src={`http://127.0.0.1:8000${url}`} alt="Agent Plot" className="rounded-lg border border-pg-border mx-auto max-h-[500px] object-contain bg-pg-surface" />
                                     ))}
                                 </div>
                             )}
@@ -162,30 +170,28 @@ export function DataAgent({ sessionId }: { sessionId: string }) {
                 ))}
 
                 {isProcessing && activeStatus && (
-                    <div className="flex justify-start animate-in fade-in duration-300">
-                        <div className="flex items-center gap-4 glass-card px-6 py-4 rounded-full text-sm font-medium text-slate-300 shadow-lg border-teal-500/20">
-                            <div className="relative flex items-center justify-center">
-                                <span className="absolute inline-flex h-full w-full rounded-full bg-teal-400 opacity-20 animate-ping"></span>
-                                <Loader2 size={20} className="animate-spin text-teal-400 relative" />
-                            </div>
-                            <span className="bg-gradient-to-r from-slate-200 to-slate-400 bg-clip-text text-transparent">{activeStatus}</span>
+                    <div className="flex justify-start animate-fade-in">
+                        <div className="flex items-center gap-3 surface-card px-4 py-3 rounded-full text-xs font-medium text-txt-secondary">
+                            <Loader2 size={16} className="animate-spin text-accent" />
+                            <span className="text-accent font-medium">{activeStatus}</span>
                         </div>
                     </div>
                 )}
             </div>
 
-            <div className="p-6 bg-slate-900/60 backdrop-blur-2xl border-t border-white/10">
+            {/* Input */}
+            <div className="p-4 bg-pg-surface border-t border-pg-border">
                 {!isConnected && (
-                    <div className="mb-4 flex items-center justify-center gap-3 text-sm font-medium text-amber-400 bg-amber-950/30 py-3 rounded-xl border border-amber-500/30 shadow-inner">
-                        <AlertCircle size={18} className="animate-pulse" /> Disconnected from reasoning engine. Attempting to reconnect...
+                    <div className="mb-3 flex items-center justify-center gap-2 text-xs font-medium text-status-warning bg-status-warning/10 py-2.5 rounded-xl border border-status-warning/20">
+                        <AlertCircle size={14} className="animate-pulse" /> Disconnected from reasoning engine. Reconnecting…
                     </div>
                 )}
-                <form onSubmit={handleSubmit} className="relative flex items-end shadow-[0_10px_40px_-10px_rgba(0,0,0,0.5)] rounded-3xl group glass-card border-white/10 focus-within:border-teal-500/50 focus-within:ring-2 focus-within:ring-teal-500/20 transition-all duration-300">
+                <form onSubmit={handleSubmit} className="relative flex items-end rounded-2xl border border-pg-border bg-pg-card focus-within:border-accent/50 focus-within:ring-2 focus-within:ring-accent/15 transition-all duration-200">
                     <textarea
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
-                        placeholder="Ask the data agent to analyze the active datasets..."
-                        className="w-full bg-transparent px-6 py-5 rounded-3xl focus:outline-none resize-none min-h-[64px] max-h-40 text-slate-200 placeholder-slate-500 text-lg leading-relaxed scrollbar-thin scrollbar-thumb-slate-700"
+                        placeholder="Ask the data agent to analyze the active datasets…"
+                        className="w-full bg-transparent px-4 py-3.5 rounded-2xl focus:outline-none resize-none min-h-[52px] max-h-36 text-txt-primary placeholder-txt-tertiary text-sm leading-relaxed scrollbar-thin scrollbar-thumb-txt-tertiary/20"
                         rows={1}
                         onKeyDown={(e) => {
                             if (e.key === 'Enter' && !e.shiftKey) {
@@ -197,9 +203,9 @@ export function DataAgent({ sessionId }: { sessionId: string }) {
                     <button
                         type="submit"
                         disabled={!isConnected || isProcessing || !input.trim()}
-                        className="mb-3 mr-3 bg-gradient-to-r from-teal-500 to-cyan-600 hover:from-teal-400 hover:to-cyan-500 text-white p-3.5 rounded-2xl transition-all shadow-[0_0_15px_rgba(20,184,166,0.3)] disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none shrink-0 hover:scale-105 active:scale-95"
+                        className="mb-2 mr-2 bg-accent hover:bg-accent-hover text-white p-2.5 rounded-xl transition-all disabled:opacity-30 disabled:cursor-not-allowed shrink-0 hover:scale-105 active:scale-95"
                     >
-                        {isProcessing ? <Loader2 size={22} className="animate-spin" /> : <Send size={22} className="ml-1" />}
+                        {isProcessing ? <Loader2 size={18} className="animate-spin" /> : <Send size={18} />}
                     </button>
                 </form>
             </div>

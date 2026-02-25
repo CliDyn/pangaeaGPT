@@ -1,24 +1,120 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================================
+   THEME TOKENS — Dark (default) + Light
+   ============================================================ */
+:root {
+  /* Surfaces */
+  --pg-bg: #0f1117;
+  --pg-surface: #161b22;
+  --pg-card: #1c2128;
+  --pg-border: #30363d;
+  --pg-border-subtle: #21262d;
+
+  /* Text */
+  --txt-primary: #e6edf3;
+  --txt-secondary: #8b949e;
+  --txt-tertiary: #484f58;
+  --txt-inverse: #0f1117;
+
+  /* Accent — calm scientific blue */
+  --accent: #58a6ff;
+  --accent-subtle: rgba(56, 139, 253, 0.15);
+  --accent-hover: #79c0ff;
+
+  /* Status */
+  --status-success: #3fb950;
+  --status-warning: #d29922;
+  --status-danger: #f85149;
+
+  /* Scrollbar */
+  --scrollbar-thumb: rgba(139, 148, 158, 0.25);
+  --scrollbar-hover: rgba(139, 148, 158, 0.4);
+
+  /* Selection */
+  --selection-bg: rgba(56, 139, 253, 0.3);
+  --selection-text: #e6edf3;
+}
+
+.light {
+  --pg-bg: #fafbfc;
+  --pg-surface: #ffffff;
+  --pg-card: #f6f8fa;
+  --pg-border: #d1d5db;
+  --pg-border-subtle: #e5e7eb;
+
+  --txt-primary: #1f2937;
+  --txt-secondary: #6b7280;
+  --txt-tertiary: #9ca3af;
+  --txt-inverse: #ffffff;
+
+  --accent: #2563eb;
+  --accent-subtle: rgba(37, 99, 235, 0.08);
+  --accent-hover: #1d4ed8;
+
+  --status-success: #16a34a;
+  --status-warning: #ca8a04;
+  --status-danger: #dc2626;
+
+  --scrollbar-thumb: rgba(107, 114, 128, 0.25);
+  --scrollbar-hover: rgba(107, 114, 128, 0.4);
+
+  --selection-bg: rgba(37, 99, 235, 0.2);
+  --selection-text: #1f2937;
+}
+
+/* ============================================================
+   BASE STYLES
+   ============================================================ */
 @layer base {
   body {
-    @apply bg-slate-950 text-slate-200 antialiased font-sans selection:bg-teal-500/30 selection:text-teal-200;
+    background-color: var(--pg-bg);
+    color: var(--txt-primary);
+    @apply antialiased font-sans;
+    transition: background-color 0.25s ease, color 0.25s ease;
+  }
+
+  ::selection {
+    background: var(--selection-bg);
+    color: var(--selection-text);
   }
 }
 
+/* ============================================================
+   COMPONENT UTILITIES
+   ============================================================ */
 @layer utilities {
-  .glass-panel {
-    @apply bg-slate-900/60 backdrop-blur-xl border border-white/5 shadow-xl;
+  .surface-panel {
+    background-color: var(--pg-surface);
+    border: 1px solid var(--pg-border-subtle);
   }
 
-  .glass-card {
-    @apply bg-slate-800/40 backdrop-blur-md border border-white/5 shadow-lg;
+  .surface-card {
+    background-color: var(--pg-card);
+    border: 1px solid var(--pg-border-subtle);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+    transition: box-shadow 0.2s ease, border-color 0.2s ease;
+  }
+
+  .surface-card:hover {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    border-color: var(--pg-border);
+  }
+
+  .surface-elevated {
+    background-color: var(--pg-surface);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+    border: 1px solid var(--pg-border-subtle);
   }
 }
 
-/* Custom scrollbar for webkit */
+/* ============================================================
+   SCROLLBAR
+   ============================================================ */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -29,9 +125,21 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  @apply bg-slate-700/50 rounded-full transition-colors;
+  background: var(--scrollbar-thumb);
+  border-radius: 999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  @apply bg-slate-600;
+  background: var(--scrollbar-hover);
+}
+
+/* ============================================================
+   PROSE OVERRIDES
+   ============================================================ */
+.prose-scientific {
+  --tw-prose-headings: var(--txt-primary);
+  --tw-prose-links: var(--accent);
+  --tw-prose-bold: var(--txt-primary);
+  --tw-prose-body: var(--txt-secondary);
+  --tw-prose-code: var(--accent);
 }

@@ -92,24 +92,42 @@ export class AgentWebSocket {
     private ws: WebSocket | null = null;
     private onMessage: WSMessageCallback;
     private onError: WSMessageCallback;
+    private onOpen: () => void;
     private onClose: () => void;
     private url: string;
+
+    private reconnectAttempts: number = 0;
+    private maxReconnectAttempts: number = 5;
+    private reconnectTimeoutId: ReturnType<typeof setTimeout> | null = null;
+    private isIntentionalDisconnect: boolean = false;
 
     constructor(
         sessionId: string,
         onMessage: WSMessageCallback,
         onError: WSMessageCallback,
+        onOpen: () => void,
         onClose: () => void
     ) {
         this.url = `${WS_BASE_URL}/sessions/${sessionId}/agent/ws`;
         this.onMessage = onMessage;
         this.onError = onError;
+        this.onOpen = onOpen;
         this.onClose = onClose;
     }
 
     connect() {
+        if (this.ws?.readyState === WebSocket.CONNECTING || this.ws?.readyState === WebSocket.OPEN) {
+            return;
+        }
+
+        this.isIntentionalDisconnect = false;
         this.ws = new WebSocket(this.url);
 
+        this.ws.onopen = () => {
+            console.log("WebSocket connection established");
+            this.reconnectAttempts = 0; // Reset attempts on successful connection
+            this.onOpen();
+        };
         this.ws.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
@@ -126,8 +144,32 @@ export class AgentWebSocket {
 
         this.ws.onclose = () => {
             console.log("WebSocket connection closed");
+            this.ws = null;
             this.onClose();
+            this.attemptReconnect();
         };
+    }
+
+    private attemptReconnect() {
+        if (this.isIntentionalDisconnect) return;
+
+        if (this.reconnectAttempts < this.maxReconnectAttempts) {
+            this.reconnectAttempts++;
+            // Exponential backoff: 1s, 2s, 4s, 8s, 16s... max 30s
+            const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts - 1), 30000);
+
+            console.log(`Attempting to reconnect in ${delay / 1000}s (Attempt ${this.reconnectAttempts})`);
+
+            if (this.reconnectTimeoutId) clearTimeout(this.reconnectTimeoutId);
+
+            this.reconnectTimeoutId = setTimeout(() => {
+                console.log("Reconnecting WebSocket...");
+                this.connect();
+            }, delay);
+        } else {
+            console.error("Max WebSocket reconnect attempts reached. Please refresh the page.");
+            this.onError({ type: "error", data: { message: "Lost connection to agent server. Please refresh." } });
+        }
     }
 
     sendQuery(query: string) {
@@ -140,6 +182,11 @@ export class AgentWebSocket {
     }
 
     disconnect() {
+        this.isIntentionalDisconnect = true;
+        if (this.reconnectTimeoutId) {
+            clearTimeout(this.reconnectTimeoutId);
+            this.reconnectTimeoutId = null;
+        }
         if (this.ws) {
             this.ws.close();
             this.ws = null;
