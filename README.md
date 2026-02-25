@@ -1,75 +1,171 @@
-# PANGAEA Dataset Explorer
+# PangaeaGPT
 
-## Overview
+An AI-powered platform for discovering, loading, and analysing scientific datasets from the [PANGAEA](https://www.pangaea.de/) data repository. PangaeaGPT combines a modern React frontend with a FastAPI backend that orchestrates a multi-agent LLM pipeline — including specialised oceanography, ecology, visualisation, and data-analysis agents — to answer natural-language questions about Earth system data.
 
-This project is a Streamlit-based application for exploring scientific datasets from the PANGAEA database. The app allows users to search for datasets, view their contents, and perform data analysis and visualization using advanced AI models and tools.
+<p align="center">
+  <img src="img/pangaea-logo.png" width="120" alt="PangaeaGPT logo" />
+</p>
+
+---
 
 ## Features
 
-- **Search and List Datasets**: Query the PANGAEA database and list datasets based on user input.
-- **Dataset Analysis**: Analyze datasets using AI agents to provide insights and answer user queries.
-- **Data Visualization**: Generate visualizations such as sampling stations maps and master track maps.
-- **Interactive Interface**: An intuitive interface built with Streamlit for easy user interaction.
+| Capability | Description |
+|---|---|
+| **Semantic Dataset Search** | Natural-language queries are translated into PANGAEA API calls and ranked by an LLM search agent |
+| **One-Click Loading** | Select datasets from search results and load them into a per-session workspace in seconds |
+| **Multi-Agent Analysis** | A supervisor agent routes queries to specialised sub-agents: Oceanographer, Ecologist, Visualisation, DataFrame, and Writer |
+| **Interactive Chat** | Real-time WebSocket chat with streaming status updates, markdown rendering, and inline plot display |
+| **Dark & Light Themes** | Clean, minimalistic scientific UI with a one-click toggle — persisted to `localStorage` |
+| **ERA5 / Copernicus Integration** | The Oceanographer agent can retrieve ERA5 reanalysis and Copernicus Marine data via Arraylake |
+| **Sandboxed Code Execution** | All agent-generated Python code runs in an isolated REPL sandbox per session |
 
-## Setup
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Frontend (React + Vite + Tailwind)                 │
+│  localhost:5174                                     │
+│  ┌──────────────┐  ┌────────────────────┐           │
+│  │ DatasetExplorer│  │   DataAgent (WS)  │           │
+│  └──────────────┘  └────────────────────┘           │
+└─────────────────────────────────────────────────────┘
+              │  REST / WebSocket  │
+              ▼                    ▼
+┌─────────────────────────────────────────────────────┐
+│  Backend (FastAPI + Uvicorn)                        │
+│  localhost:8000                                     │
+│  ┌────────────┐  ┌──────────────────────┐           │
+│  │ SessionMgr │  │ SupervisorAgent      │           │
+│  └────────────┘  │  ├─ OceanographerAgt │           │
+│                  │  ├─ EcologistAgent    │           │
+│                  │  ├─ VisualisationAgt  │           │
+│                  │  ├─ DataFrameAgent    │           │
+│                  │  └─ WriterAgent       │           │
+│                  └──────────────────────┘           │
+└─────────────────────────────────────────────────────┘
+```
+
+---
+
+## Quick Start
 
 ### Prerequisites
 
-- Python 3.10 or higher
-- pip (Python package installer)
+- **Python 3.10+**
+- **Node.js 18+** and npm
+- An **OpenAI API key** (set as `OPENAI_API_KEY`)
 
-### Installation
+### 1. Clone & install backend
 
-1. **Clone the repository**:
+```bash
+git clone https://github.com/CliDyn/pangaeaGPT.git
+cd pangaeaGPT
 
-    ```sh
-    git clone https://github.com/dmpantiu/pangaeaGPT.git
-    cd pangaeaGPT
-    ```
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
-2. **Install the required packages**:
+pip install -r requirements.txt
+python setup.py             # downloads shapefiles + bathymetry data
+```
 
-    ```sh
-    pip install -r requirements.txt
-    ```
+### 2. Configure environment
 
-3. **Download and prepare necessary data**:
+Create a `.env` file in the project root (already in `.gitignore`):
 
-    Run the `setup.py` script to download and extract shapefiles and bathymetry data, and to configure API keys.
+```env
+OPENAI_API_KEY=sk-...
+# Optional:
+LANGCHAIN_API_KEY=ls-...
+ARRAYLAKE_API_KEY=...
+```
 
-    ```sh
-    python setup.py
-    ```
+### 3. Install & run frontend
 
-    Follow the prompts to enter your OpenAI API key and optionally your LangChain API key and project name.
+```bash
+cd frontend
+npm install
+npm run dev          # → http://localhost:5174
+```
 
-4. **Prepare Streamlit secrets**:
+### 4. Run backend
 
-    The `setup.py` script will create a `.streamlit/secrets.toml` file with your API keys.
+```bash
+# In a separate terminal, from the project root
+source .venv/bin/activate
+uvicorn api.main:app   # → http://localhost:8000
+```
 
-### Running the Application
+Open **http://localhost:5174** — the app will auto-connect to the backend.
 
-1. **Start the Streamlit application**:
+---
 
-    ```sh
-    streamlit run app.py
-    ```
+## UI Overview
 
-2. **Use the app**:
+The interface has two main views, accessible from the left sidebar:
 
-    Open your web browser and navigate to the URL provided by Streamlit (usually `http://localhost:8501`).
+### Dataset Explorer
+Search PANGAEA, browse result cards with metadata, preview tabular data inline, and select datasets to load into your workspace.
 
-    - Use the sidebar to configure settings such as the AI model.
-    - Enter your search queries in the input field to search for datasets.
-    - Fetch and analyze datasets, and view generated visualizations directly in the app.
+### Data Agent
+Chat with the multi-agent pipeline. Ask questions like:
+- *"What columns are in this dataset?"*
+- *"Plot a map of the sampling stations"*
+- *"Calculate the mean temperature by depth"*
+- *"Create a species distribution model"*
+
+The agent will plan, delegate to specialist sub-agents, execute Python code in a sandbox, and stream the results back — including inline matplotlib/cartopy plots.
+
+### Theme Toggle
+Click the ☀️ / 🌙 icon in the sidebar to switch between dark and light themes.
+
+---
 
 ## Project Structure
 
-- `main.py`: The main Streamlit application file containing the logic for searching, displaying, and analyzing datasets.
-- `setup.py`: A setup script to download required shapefiles and bathymetry data, and to configure API keys.
-- `plotting_tools/hard_agent.py`: Contains functions for generating visualizations of sampling stations and master track maps.
-- `requirements.txt`: Lists the Python packages required for the project.
+```
+├── api/                   # FastAPI routes and server entry point
+│   ├── main.py            #   App factory, static mounts, CORS
+│   └── routes/            #   REST + WebSocket endpoints
+│       ├── sessions.py    #     Session lifecycle
+│       ├── search.py      #     Dataset search, select, preview
+│       └── agent.py       #     WebSocket agent chat
+├── frontend/              # React (Vite + TypeScript + Tailwind)
+│   └── src/
+│       ├── App.tsx         #   Shell, sidebar, theme toggle
+│       ├── index.css       #   CSS custom properties (dark/light)
+│       ├── api/client.ts   #   REST client + WebSocket class
+│       └── components/
+│           ├── DatasetExplorer.tsx
+│           ├── DataAgent.tsx
+│           └── WorkspacePanel.tsx
+├── src/                   # Core Python package
+│   ├── agents/            #   Supervisor + specialist agents
+│   ├── tools/             #   LangChain tools (REPL, ERA5, planning, …)
+│   ├── search/            #   PANGAEA search + dataset download utils
+│   ├── config.py          #   Env-var config loader (no hardcoded keys)
+│   └── llm_factory.py     #   Model instantiation helper
+├── main.py                # Session init, dataset loading, agent wiring
+├── setup.py               # One-time data download script
+└── requirements.txt
+```
+
+---
+
+## Legacy Streamlit Interface
+
+The original Streamlit frontend (`app.py`) is still available for reference:
+
+```bash
+streamlit run app.py
+```
+
+The new React + FastAPI architecture decouples frontend and backend, supports WebSocket streaming, session isolation, and theme customisation.
+
+---
 
 ## Contributing
 
-Contributions are welcome! If you have any ideas, suggestions, or bug reports, please create an issue or submit a pull request.
+Contributions welcome! Please open an issue or PR on [GitHub](https://github.com/CliDyn/pangaeaGPT).
