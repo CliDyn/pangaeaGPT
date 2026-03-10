@@ -1,7 +1,7 @@
 import axios from 'axios';
 
-const API_BASE_URL = 'http://127.0.0.1:8000/api';
-const WS_BASE_URL = 'ws://127.0.0.1:8000/api';
+const API_BASE_URL = '/api';
+const WS_BASE_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/api`;
 
 // --- Types ---
 export interface Dataset {
