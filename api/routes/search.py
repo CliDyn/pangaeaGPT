@@ -7,6 +7,7 @@ REST endpoints for the search workflow:
 """
 
 import logging
+import re
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -38,6 +39,7 @@ class SearchResponse(BaseModel):
     response: str
     datasets: Optional[list] = None
     dataset_count: int = 0
+    recommended_dois: Optional[List[str]] = None
 
 
 class DatasetSelectRequest(BaseModel):
@@ -101,11 +103,48 @@ async def execute_search(session_id: str, request: SearchRequest):
         except Exception:
             datasets_list = None
 
+    # Extract DOIs mentioned in the agent's text response for auto-selection
+    recommended_dois = _extract_recommended_dois(response_text, datasets_list)
+
     return SearchResponse(
         response=response_text,
         datasets=datasets_list,
         dataset_count=dataset_count,
+        recommended_dois=recommended_dois,
     )
+
+
+def _extract_recommended_dois(response_text: str, datasets_list: Optional[list]) -> Optional[List[str]]:
+    """
+    Extract PANGAEA DOIs mentioned in the agent's text response.
+    Only returns DOIs that actually exist in the workspace dataset list.
+    """
+    if not response_text:
+        return None
+
+    # Find all PANGAEA DOI patterns in the response text
+    doi_pattern = r'https?://doi\.org/10\.1594/PANGAEA\.\d+'
+    mentioned_dois = re.findall(doi_pattern, response_text)
+
+    if not mentioned_dois:
+        return None
+
+    # Normalize to https
+    mentioned_dois = [d.replace('http://', 'https://') for d in mentioned_dois]
+    # Deduplicate while preserving order (agent lists them by relevance)
+    seen = set()
+    unique_dois = []
+    for d in mentioned_dois:
+        if d not in seen:
+            seen.add(d)
+            unique_dois.append(d)
+
+    # Filter to only DOIs that exist in the workspace
+    if datasets_list:
+        workspace_dois = {(ds.get('DOI') or ds.get('doi', '')) for ds in datasets_list}
+        unique_dois = [d for d in unique_dois if d in workspace_dois]
+
+    return unique_dois if unique_dois else None
 
 
 @router.get("/sessions/{session_id}/datasets")

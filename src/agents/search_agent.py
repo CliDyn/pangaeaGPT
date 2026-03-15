@@ -94,146 +94,13 @@ consolidate_tool = StructuredTool.from_function(
 
 
 # === SMART FILTER TOOL ===
+# FilterWorkspaceArgs schema (used by both simple and deep modes)
 class FilterWorkspaceArgs(BaseModel):
     user_query: str = Field(description="The original user query/request to filter datasets against")
     max_keep: int = Field(default=30, description="Maximum number of datasets to keep after filtering (default 30 for benchmark comparability)")
 
-def filter_workspace_datasets(user_query: str, max_keep: int = 30, config: RunnableConfig = None):
-    """
-    FINAL FILTER: Analyzes ALL accumulated datasets and keeps only the most relevant ones.
-    Uses LLM to intelligently score datasets based on Name, Parameters, and Description.
-
-    Args:
-        user_query: The user's original request
-        max_keep: Maximum datasets to keep
-
-    Returns:
-        str: Summary of filtering results
-    """
-    import pandas as pd
-
-    session_id = config.get("configurable", {}).get("session_id", "default") if config else "default"
-    session_data = SessionManager.get_session(session_id)
-
-    # Check if we have datasets
-    if "datasets_info" not in session_data or session_data["datasets_info"] is None:
-        return "No datasets in workspace to filter."
-
-    df = session_data["datasets_info"]
-    if df.empty:
-        return "Workspace is empty."
-
-    total_before = len(df)
-
-    if total_before <= max_keep:
-        return f"Workspace has {total_before} datasets (≤{max_keep}). No filtering needed."
-
-    logging.info(f"Filtering {total_before} datasets down to {max_keep} based on: '{user_query}'")
-
-    # Build scoring prompt for LLM
-    llm = get_llm(temperature=0.0)  # Deterministic for scoring
-
-    # Create dataset summaries for scoring
-    dataset_summaries = []
-    for idx, row in df.iterrows():
-        summary = f"[{idx}] Name: {row.get('Name', 'Unknown')[:100]}"
-        params = row.get('Parameters', '')
-        if params:
-            summary += f" | Params: {str(params)[:80]}"
-        desc = row.get('Short Description', row.get('Description', ''))
-        if desc:
-            summary += f" | Desc: {str(desc)[:100]}"
-        dataset_summaries.append(summary)
-
-    datasets_text = "\n".join(dataset_summaries)
-
-    scoring_prompt = f"""You are a dataset relevance scorer.
-
-USER REQUEST: "{user_query}"
-
-DATASETS IN WORKSPACE:
-{datasets_text}
-
-TASK: Select up to {max_keep} MOST RELEVANT datasets for the user's request.
-Consider: dataset name, parameters, and description.
-
-**TARGET: Select the best matching datasets (up to {max_keep}). More results = better for comprehensive analysis.**
-
-RESPOND WITH ONLY a JSON array of the dataset indices (the numbers in brackets) to KEEP, **ORDERED BY RELEVANCE (most relevant first)**.
-Example: [0, 3, 5, 7, 12]
-
-Keep datasets that:
-- Directly match the topic/region/timeframe requested
-- Have relevant parameters (e.g., if user wants temperature, keep datasets with temperature params)
-- Are primary data (not meta-studies or reference lists)
-- **PRIORITIZE directly downloadable formats (tab-delimited text, CSV, NetCDF) over ZIP archives.**
-
-Remove datasets that:
-- Are unrelated to the request
-- Are duplicates or very similar to better ones
-- Are meta-studies without actual data
-- **ZIP archives/compressed files (unless ABSOLUTELY NO other data exists). PENALIZE ZIPs HEAVILY.**
-
-JSON array of indices to keep (sorted by relevance):"""
-
-    try:
-        from langchain_core.messages import HumanMessage
-        response = llm.invoke([HumanMessage(content=scoring_prompt)])
-
-        # Parse the response to get indices
-        import json
-        import re
-
-        # Extract JSON array from response
-        content = response.content.strip()
-        # Find array pattern
-        match = re.search(r'\[[\d,\s]+\]', content)
-        if match:
-            indices_to_keep = json.loads(match.group())
-        else:
-            # Fallback: try to parse the whole response
-            indices_to_keep = json.loads(content)
-
-        # Validate indices
-        valid_indices = [i for i in indices_to_keep if 0 <= i < len(df)][:max_keep]
-
-        if not valid_indices:
-            logging.warning("LLM returned no valid indices, keeping first N datasets")
-            valid_indices = list(range(min(max_keep, len(df))))
-
-        filtered_df['Number'] = filtered_df.index + 1
-
-        # Update session state
-        SessionManager.update_session(session_id, "datasets_info", filtered_df)
-        session_data = SessionManager.get_session(session_id)
-
-        removed_count = total_before - len(filtered_df)
-
-        # Update UI message
-        session_data.setdefault("messages_search", []).append({
-            "role": "assistant",
-            "content": f"**Filtered & Sorted:** Kept {len(filtered_df)} most relevant datasets (removed {removed_count}).",
-            "table": filtered_df.to_json(orient="split")
-        })
-
-        logging.info(f"Filtering complete: {total_before} -> {len(filtered_df)} datasets")
-
-        return f"Filtered and SORTED workspace from {total_before} to {len(filtered_df)} datasets. Removed {removed_count} less relevant datasets."
-
-    except Exception as e:
-        logging.error(f"Error during filtering: {e}")
-        # Fallback: just keep first N
-        filtered_df = df.head(max_keep).reset_index(drop=True)
-        filtered_df['Number'] = filtered_df.index + 1
-        SessionManager.update_session(session_id, "datasets_info", filtered_df)
-        return f"Fallback filter: Kept first {max_keep} datasets (error in smart filtering: {e})"
-
-filter_workspace_tool = StructuredTool.from_function(
-    func=filter_workspace_datasets,
-    name="filter_workspace",
-    description="Final cleanup: auto-selects best datasets, removes ZIPs, ranks by relevance. ALWAYS call this after your 1-3 initial searches to finalize the workspace.",
-    args_schema=FilterWorkspaceArgs
-)
+# NOTE: filter_workspace_datasets is defined inside create_search_agent()
+# so it can capture the closure session_id (same pattern as search_pg_datasets_tool_enhanced).
 
 def create_search_agent(datasets_info=None, search_mode="simple", session_id="default"):
     """
@@ -258,7 +125,7 @@ def create_search_agent(datasets_info=None, search_mode="simple", session_id="de
    - Try to capture the core topic and region.
 2. (Optional) If you need more datasets or a slightly different cut, do 1 or 2 more searches (maximum 5 searches total).
 3. ✅ ONCE YOU HAVE ENOUGH DATASETS (typically after 1-3 searches), CALL: `filter_workspace(user_query="...", max_keep=30)` to automatically select and rank the best ones.
-4. ✅ STOP - provide a brief text summary of what you found.
+4. ✅ STOP - provide a brief text summary of what you found. **CRITICAL: In your final summary, ONLY reference datasets (DOIs) that appear in the `filter_workspace` output. NEVER reference DOIs from memory or raw search results - ONLY the ones listed by `filter_workspace`.**
 
 **BOOLEAN QUERY RULES:**
 - ALWAYS use `count=30`
@@ -269,7 +136,7 @@ def create_search_agent(datasets_info=None, search_mode="simple", session_id="de
 **TERMINATION RULES:**
 - ❌ DO NOT run more than 5 searches. It is a waste of time and API quota. 
 - ✅ ALWAYS Call `filter_workspace` to finalize the list after searching.
-- ✅ After `filter_workspace`, give a brief text summary and STOP.
+- ✅ After `filter_workspace`, give a brief text summary and STOP. **In your summary, ONLY mention DOIs that were returned by `filter_workspace`. These are the ONLY datasets the user will see in their table.**
 """
     else:
         # DEEP MODE: COMPREHENSIVE PARALLEL SEARCH
@@ -385,7 +252,7 @@ The parallel_search_pangaea tool returns:
 4. Pass ONLY this curated DOI list to consolidate_search_results. Preferably with at least 10-15 DOIs.
 5. **SHOPPING CART**: New datasets are ADDED to the workspace, not replacing old ones!
 6. **SMART FILTER**: If workspace has >15-20 datasets, call `filter_workspace` to keep only the best!
-7. IMPORTANT: After work complete, write ONLY a brief 3-4 sentence summary. DO NOT list DOIs - creates double display!
+7. IMPORTANT: After `filter_workspace`, write ONLY a brief 3-4 sentence summary. **ONLY use DOIs from the `filter_workspace` output.** DO NOT list DOIs from memory - creates double display!
 
 **SMART FILTERING (USE WHEN WORKSPACE HAS MANY DATASETS):**
 - Call `filter_workspace(user_query="original request", max_keep=30)` at the END
@@ -496,12 +363,157 @@ The parallel_search_pangaea tool returns:
         # Return structured result for agent to collect
         return search_result
 
+    # === SMART FILTER TOOL (closure-based, uses session_id from create_search_agent) ===
+    def filter_workspace_datasets(user_query: str, max_keep: int = 30, config: RunnableConfig = None):
+        """
+        FINAL FILTER: Analyzes ALL accumulated datasets and keeps only the most relevant ones.
+        Uses LLM to intelligently score datasets based on Name, Parameters, and Description.
+        Uses session_id from the enclosing create_search_agent scope.
+        """
+        import pandas as pd
+
+        # Use session_id from closure (same pattern as search_pg_datasets_tool_enhanced)
+        session_data = SessionManager.get_session(session_id)
+
+        # Check if we have datasets
+        if "datasets_info" not in session_data or session_data["datasets_info"] is None:
+            return "No datasets in workspace to filter."
+
+        df = session_data["datasets_info"]
+        if df.empty:
+            return "Workspace is empty."
+
+        total_before = len(df)
+
+        if total_before <= max_keep:
+            # Still return the dataset list so agent knows what's in workspace
+            ds_list = "\n".join(
+                f"- {row.get('Name', 'Unknown')[:120]} | DOI: {row.get('DOI', 'N/A')}"
+                for _, row in df.iterrows()
+            )
+            return f"Workspace has {total_before} datasets (≤{max_keep}). No filtering needed.\n\n**Datasets in workspace:**\n{ds_list}"
+
+        logging.info(f"Filtering {total_before} datasets down to {max_keep} based on: '{user_query}'")
+
+        # Build scoring prompt for LLM
+        filter_llm = get_llm(temperature=0.0)  # Deterministic for scoring
+
+        # Create dataset summaries for scoring
+        dataset_summaries = []
+        for idx, row in df.iterrows():
+            summary = f"[{idx}] Name: {row.get('Name', 'Unknown')[:100]}"
+            params = row.get('Parameters', '')
+            if params:
+                summary += f" | Params: {str(params)[:80]}"
+            desc = row.get('Short Description', row.get('Description', ''))
+            if desc:
+                summary += f" | Desc: {str(desc)[:100]}"
+            dataset_summaries.append(summary)
+
+        datasets_text = "\n".join(dataset_summaries)
+
+        scoring_prompt = f"""You are a dataset relevance scorer.
+
+USER REQUEST: "{user_query}"
+
+DATASETS IN WORKSPACE:
+{datasets_text}
+
+TASK: Select up to {max_keep} MOST RELEVANT datasets for the user's request.
+Consider: dataset name, parameters, and description.
+
+**TARGET: Select the best matching datasets (up to {max_keep}). More results = better for comprehensive analysis.**
+
+RESPOND WITH ONLY a JSON array of the dataset indices (the numbers in brackets) to KEEP, **ORDERED BY RELEVANCE (most relevant first)**.
+Example: [0, 3, 5, 7, 12]
+
+Keep datasets that:
+- Directly match the topic/region/timeframe requested
+- Have relevant parameters (e.g., if user wants temperature, keep datasets with temperature params)
+- Are primary data (not meta-studies or reference lists)
+- **PRIORITIZE directly downloadable formats (tab-delimited text, CSV, NetCDF) over ZIP archives.**
+
+Remove datasets that:
+- Are unrelated to the request
+- Are duplicates or very similar to better ones
+- Are meta-studies without actual data
+- **ZIP archives/compressed files (unless ABSOLUTELY NO other data exists). PENALIZE ZIPs HEAVILY.**
+
+JSON array of indices to keep (sorted by relevance):"""
+
+        try:
+            from langchain_core.messages import HumanMessage
+            response = filter_llm.invoke([HumanMessage(content=scoring_prompt)])
+
+            # Parse the response to get indices
+            import json
+            import re
+
+            # Extract JSON array from response
+            content = response.content.strip()
+            # Find array pattern
+            match = re.search(r'\[[\d,\s]+\]', content)
+            if match:
+                indices_to_keep = json.loads(match.group())
+            else:
+                # Fallback: try to parse the whole response
+                indices_to_keep = json.loads(content)
+
+            # Validate indices
+            valid_indices = [i for i in indices_to_keep if 0 <= i < len(df)][:max_keep]
+
+            if not valid_indices:
+                logging.warning("LLM returned no valid indices, keeping first N datasets")
+                valid_indices = list(range(min(max_keep, len(df))))
+
+            # Build filtered DataFrame from selected indices
+            filtered_df = df.iloc[valid_indices].reset_index(drop=True)
+            filtered_df['Number'] = filtered_df.index + 1
+
+            # Update session state
+            SessionManager.update_session(session_id, "datasets_info", filtered_df)
+            session_data_updated = SessionManager.get_session(session_id)
+
+            removed_count = total_before - len(filtered_df)
+
+            # Update UI message
+            session_data_updated.setdefault("messages_search", []).append({
+                "role": "assistant",
+                "content": f"**Filtered & Sorted:** Kept {len(filtered_df)} most relevant datasets (removed {removed_count}).",
+                "table": filtered_df.to_json(orient="split")
+            })
+
+            logging.info(f"Filtering complete: {total_before} -> {len(filtered_df)} datasets")
+
+            # Build the list of surviving datasets for the agent
+            ds_list = "\n".join(
+                f"- {row.get('Name', 'Unknown')[:120]} | DOI: {row.get('DOI', 'N/A')}"
+                for _, row in filtered_df.iterrows()
+            )
+            return f"Filtered and SORTED workspace from {total_before} to {len(filtered_df)} datasets. Removed {removed_count} less relevant datasets.\n\n**Datasets now in workspace (use ONLY these DOIs in your final summary):**\n{ds_list}"
+
+        except Exception as e:
+            logging.error(f"Error during filtering: {e}")
+            # Fallback: just keep first N
+            filtered_df = df.head(max_keep).reset_index(drop=True)
+            filtered_df['Number'] = filtered_df.index + 1
+            SessionManager.update_session(session_id, "datasets_info", filtered_df)
+            return f"Fallback filter: Kept first {max_keep} datasets (error in smart filtering: {e})"
+
     # Create enhanced search tool
     search_tool = StructuredTool.from_function(
         func=search_pg_datasets_tool_enhanced,
         name="search_pg_datasets",
         description="Search PANGAEA with Boolean queries. ALWAYS count=30. Keep to 1-3 well-crafted searches total, then use filter_workspace.",
         args_schema=SearchPangaeaArgs
+    )
+
+    # Create filter workspace tool (uses closure session_id)
+    filter_workspace_tool = StructuredTool.from_function(
+        func=filter_workspace_datasets,
+        name="filter_workspace",
+        description="Final cleanup: auto-selects best datasets, removes ZIPs, ranks by relevance. ALWAYS call this after your 1-3 initial searches to finalize the workspace.",
+        args_schema=FilterWorkspaceArgs
     )
 
     # Create the publication QA tool

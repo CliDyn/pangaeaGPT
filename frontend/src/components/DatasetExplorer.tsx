@@ -53,6 +53,10 @@ export function DatasetExplorer({ sessionId, onDatasetsLoaded }: DatasetExplorer
             if (res.datasets) {
                 setDatasets(res.datasets);
             }
+            // Auto-select DOIs recommended by the agent
+            if (searchResult.recommended_dois && searchResult.recommended_dois.length > 0) {
+                setSelectedDois(new Set(searchResult.recommended_dois));
+            }
             setHasSearched(true);
         } catch (err) {
             console.error("Search failed:", err);
